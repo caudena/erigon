@@ -233,6 +233,7 @@ type TxPool struct {
 	pragueTime              *uint64
 	isPostPrague            atomic.Bool
 	maxBlobsPerBlock        uint64
+	maxBlobsPerBlockPrague  *uint64
 	feeCalculator           FeeCalculator
 	logger                  log.Logger
 }
@@ -243,6 +244,7 @@ type FeeCalculator interface {
 
 func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, cache kvcache.Cache,
 	chainID uint256.Int, shanghaiTime, agraBlock, cancunTime, pragueTime *big.Int, maxBlobsPerBlock uint64,
+	maxBlobsPerBlockPrague *uint64,
 	feeCalculator FeeCalculator, logger log.Logger,
 ) (*TxPool, error) {
 	localsHistory, err := simplelru.NewLRU[string, struct{}](10_000, nil)
@@ -289,8 +291,11 @@ func New(newTxs chan types.Announcements, coreDB kv.RoDB, cfg txpoolcfg.Config, 
 		minedBlobTxsByBlock:     map[uint64][]*metaTx{},
 		minedBlobTxsByHash:      map[string]*metaTx{},
 		maxBlobsPerBlock:        maxBlobsPerBlock,
+		maxBlobsPerBlockPrague:  maxBlobsPerBlockPrague,
 		feeCalculator:           feeCalculator,
-		logger:                  logger,
+		// builderNotifyNewTxns:    builderNotifyNewTxns,
+		// newSlotsStreams:         newSlotsStreams,
+		logger: logger,
 	}
 
 	if shanghaiTime != nil {
@@ -727,6 +732,7 @@ func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableG
 	best := p.pending.best
 
 	isShanghai := p.isShanghai() || p.isAgra()
+	isPrague := p.isPrague()
 
 	txs.Resize(uint(cmp.Min(int(n), len(best.ms))))
 	var toRemove []*metaTx
@@ -774,7 +780,10 @@ func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableG
 		// not an exact science using intrinsic gas but as close as we could hope for at
 		// this stage
 		authorizationLen := uint64(len(mt.Tx.Authorizations))
-		intrinsicGas, _ := txpoolcfg.CalcIntrinsicGas(uint64(mt.Tx.DataLen), uint64(mt.Tx.DataNonZeroLen), authorizationLen, nil, mt.Tx.Creation, true, true, isShanghai)
+		intrinsicGas, floorGas, _ := txpoolcfg.CalcIntrinsicGas(uint64(mt.Tx.DataLen), uint64(mt.Tx.DataNonZeroLen), authorizationLen, nil, mt.Tx.Creation, true, true, isShanghai, isPrague)
+		if isPrague && floorGas > intrinsicGas {
+			intrinsicGas = floorGas
+		}
 		if intrinsicGas > availableGas {
 			// we might find another TX with a low enough intrinsic gas to include so carry on
 			continue
@@ -860,7 +869,7 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 		if blobCount == 0 {
 			return txpoolcfg.NoBlobs
 		}
-		if blobCount > p.maxBlobsPerBlock {
+		if blobCount > p.GetMaxBlobsPerBlock() {
 			return txpoolcfg.TooManyBlobs
 		}
 		equalNumber := len(txn.BlobHashes) == len(txn.Blobs) &&
@@ -918,7 +927,11 @@ func (p *TxPool) validateTx(txn *types.TxSlot, isLocal bool, stateCache kvcache.
 		}
 		return txpoolcfg.UnderPriced
 	}
-	gas, reason := txpoolcfg.CalcIntrinsicGas(uint64(txn.DataLen), uint64(txn.DataNonZeroLen), uint64(authorizationLen), nil, txn.Creation, true, true, isShanghai)
+	gas, floorGas, reason := txpoolcfg.CalcIntrinsicGas(uint64(txn.DataLen), uint64(txn.DataNonZeroLen), uint64(authorizationLen), nil, txn.Creation, true, true, isShanghai, p.isPrague())
+	if p.isPrague() && floorGas > gas {
+		gas = floorGas
+	}
+
 	if txn.Traced {
 		p.logger.Info(fmt.Sprintf("TX TRACING: validateTx intrinsic gas idHash=%x gas=%d", txn.IDHash, gas))
 	}
@@ -1063,6 +1076,17 @@ func (p *TxPool) isCancun() bool {
 
 func (p *TxPool) isPrague() bool {
 	return isTimeBasedForkActivated(&p.isPostPrague, p.pragueTime)
+}
+
+func (p *TxPool) GetMaxBlobsPerBlock() uint64 {
+	if p.isPrague() {
+		if p.maxBlobsPerBlockPrague != nil {
+			return *p.maxBlobsPerBlockPrague
+		}
+		return 9 // EIP-7691 default
+	} else {
+		return p.maxBlobsPerBlock
+	}
 }
 
 // Check that the serialized txn should not exceed a certain max size

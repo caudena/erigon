@@ -64,7 +64,7 @@ func (api *BaseAPI) getReceipts(ctx context.Context, tx kv.Tx, block *types.Bloc
 
 	usedGas := new(uint64)
 	usedBlobGas := new(uint64)
-	gp := new(core.GasPool).AddGas(block.GasLimit()).AddBlobGas(chainConfig.GetMaxBlobGasPerBlock())
+	gp := new(core.GasPool).AddGas(block.GasLimit()).AddBlobGas(chainConfig.GetMaxBlobGasPerBlock(block.Time()))
 
 	noopWriter := state.NewNoopWriter()
 
@@ -533,7 +533,7 @@ func txnExecutor(tx kv.TemporalTx, chainConfig *chain.Config, engine consensus.E
 
 func (e *intraBlockExec) changeBlock(header *types.Header) {
 	e.blockNum = header.Number.Uint64()
-	blockCtx := transactions.NewEVMBlockContext(e.engine, header, true /* requireCanonical */, e.tx, e.br)
+	blockCtx := transactions.NewEVMBlockContext(e.engine, header, true /* requireCanonical */, e.tx, e.br, e.chainConfig)
 	e.blockCtx = &blockCtx
 	e.blockHash = header.Hash()
 	e.header = header
@@ -796,7 +796,7 @@ func marshalReceipt(receipt *types.Receipt, txn types.Transaction, chainConfig *
 		if header.ExcessBlobGas == nil {
 			log.Warn("excess blob gas not set when trying to marshal blob tx")
 		} else {
-			blobGasPrice, err := misc.GetBlobGasPrice(chainConfig, *header.ExcessBlobGas)
+			blobGasPrice, err := misc.GetBlobGasPrice(chainConfig, *header.ExcessBlobGas, header.Time)
 			if err != nil {
 				log.Error(err.Error())
 			}
