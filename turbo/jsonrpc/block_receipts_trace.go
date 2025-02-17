@@ -13,11 +13,11 @@ import (
 	"github.com/erigontech/erigon/core/types"
 	"github.com/holiman/uint256"
 
-	"github.com/erigontech/erigon/common/math"
+	"github.com/erigontech/erigon-lib/common/math"
 
 	"github.com/erigontech/erigon/rpc"
 
-	"github.com/erigontech/erigon/crypto"
+	"github.com/erigontech/erigon-lib/crypto"
 	"github.com/erigontech/erigon/turbo/adapter/ethapi"
 	"github.com/erigontech/erigon/turbo/rpchelper"
 )
