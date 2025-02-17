@@ -24,10 +24,10 @@ import (
 	"github.com/erigontech/erigon-lib/kv/kvcache"
 	libstate "github.com/erigontech/erigon-lib/state"
 
+	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon/cmd/rpcdaemon/cli"
 	"github.com/erigontech/erigon/cmd/rpcdaemon/cli/httpcfg"
 	"github.com/erigontech/erigon/common"
-	"github.com/erigontech/erigon/common/math"
 	"github.com/erigontech/erigon/consensus"
 	"github.com/erigontech/erigon/consensus/merge"
 	"github.com/erigontech/erigon/core/types"
@@ -178,10 +178,12 @@ func (s *EngineServer) newPayload(ctx context.Context, req *engine_types.Executi
 	}
 	if version >= clparams.ElectraVersion {
 		requests = make(types.FlatRequests, 0)
+		lastReqType := -1
 		for i, r := range executionRequests {
-			if len(r) <= 1 {
+			if len(r) <= 1 || lastReqType >= 0 && int(r[0]) <= lastReqType {
 				return nil, &rpc.InvalidParamsError{Message: fmt.Sprintf("Invalid Request at index %d", i)}
 			}
+			lastReqType = int(r[0])
 			requests = append(requests, types.FlatRequest{Type: r[0], RequestData: r[1:]})
 		}
 		rh := requests.Hash()

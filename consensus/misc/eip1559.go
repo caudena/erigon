@@ -23,10 +23,10 @@ import (
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
 	libcommon "github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/common/math"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon/polygon/bor/borcfg"
 
-	"github.com/erigontech/erigon/common/math"
 	"github.com/erigontech/erigon/core/rawdb"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/params"
@@ -84,18 +84,13 @@ func (f eip1559Calculator) CurrentFees(chainConfig *chain.Config, db kv.Getter) 
 		}
 
 		if currentHeader.ExcessBlobGas != nil {
-			var nextHeaderTime = currentHeader.Time + 1 // Speculative - Next header must be at least 1 second ahead
-			parentHeader := rawdb.ReadHeaderByNumber(db, currentHeader.Number.Uint64()-1)
-			if parentHeader != nil {
-				nextHeaderTime = currentHeader.Time + (currentHeader.Time - parentHeader.Time) // This difference should be close enough to seconds per slot
-			}
-			excessBlobGas := CalcExcessBlobGas(chainConfig, currentHeader, nextHeaderTime)
-			b, err := GetBlobGasPrice(chainConfig, excessBlobGas, nextHeaderTime)
-			if err == nil {
-				blobFee = b.Uint64()
-			} else {
+			nextBlockTime := currentHeader.Time + chainConfig.SecondsPerSlot()
+			excessBlobGas := CalcExcessBlobGas(chainConfig, currentHeader, nextBlockTime)
+			b, err := GetBlobGasPrice(chainConfig, excessBlobGas, nextBlockTime)
+			if err != nil {
 				return 0, 0, 0, 0, err
 			}
+			blobFee = b.Uint64()
 		}
 	}
 
