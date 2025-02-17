@@ -96,7 +96,7 @@ func (t *TxTask) Sender() *libcommon.Address {
 		return t.sender
 	}
 	signer := *types.MakeSigner(t.Config, t.BlockNum, t.Header.Time)
-	sender, err := signer.Sender(t.Tx)
+	sender, _, err := signer.Sender(t.Tx)
 	if err != nil {
 		panic(err)
 	}

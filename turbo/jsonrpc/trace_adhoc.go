@@ -22,10 +22,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/erigontech/erigon-lib/kv/rawdbv3"
-	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 	"math"
 	"strings"
+
+	"github.com/erigontech/erigon-lib/kv/rawdbv3"
+	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 
 	"github.com/holiman/uint256"
 
@@ -85,7 +86,7 @@ type TraceCallResult struct {
 	StateDiff       map[libcommon.Address]*StateDiffAccount `json:"stateDiff"`
 	Trace           []*ParityTrace                          `json:"trace"`
 	VmTrace         *VmTrace                                `json:"vmTrace"`
-	TransactionHash *libcommon.Hash                         `json:"transactionHash,omitempty"`
+	TransactionHash *libcommon.Hash                         `json:"-"`
 }
 
 // StateDiffAccount is the part of `trace_call` response that is under "stateDiff" tag
@@ -1381,7 +1382,11 @@ func (api *TraceAPIImpl) doCallBlock(ctx context.Context, dbtx kv.Tx, stateReade
 			execResult, err = core.ApplyMessage(evm, msg, gp, true /* refunds */, gasBailout /*gasBailout*/)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("first run for txIndex %d error: %w", txIndex, err)
+			//return nil, fmt.Errorf("first run for txIndex %d error: %w", txIndex, err)
+			null_trace := &TraceCallResult{Trace: []*ParityTrace{}}
+			results = append(results, null_trace)
+
+			continue
 		}
 
 		chainRules := chainConfig.Rules(blockCtx.BlockNumber, blockCtx.Time)

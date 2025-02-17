@@ -509,7 +509,7 @@ func (tx *AccessListTx) Sender(signer Signer) (libcommon.Address, error) {
 		}
 	}
 
-	addr, err := signer.Sender(tx)
+	addr, _, err := signer.Sender(tx)
 	if err != nil {
 		return libcommon.Address{}, err
 	}

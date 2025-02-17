@@ -109,7 +109,7 @@ func (stx *BlobTx) Sender(signer Signer) (libcommon.Address, error) {
 			return *from, nil
 		}
 	}
-	addr, err := signer.Sender(stx)
+	addr, _, err := signer.Sender(stx)
 	if err != nil {
 		return libcommon.Address{}, err
 	}

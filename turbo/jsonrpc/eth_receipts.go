@@ -20,10 +20,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 
 	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/erigontech/erigon-lib/chain"
 	"github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon-lib/common/hexutil"
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/kv/bitmapdb"
 	"github.com/erigontech/erigon-lib/kv/order"
@@ -31,6 +33,7 @@ import (
 	"github.com/erigontech/erigon-lib/kv/stream"
 	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon/cmd/state/exec3"
+	"github.com/erigontech/erigon/consensus/misc"
 	"github.com/erigontech/erigon/core/rawdb/rawtemporaldb"
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/eth/ethutils"
@@ -39,6 +42,7 @@ import (
 	"github.com/erigontech/erigon/rpc"
 	"github.com/erigontech/erigon/turbo/rpchelper"
 	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
+	"github.com/holiman/uint256"
 )
 
 // getReceipts - checking in-mem cache, or else fallback to db, or else fallback to re-exec of block to re-gen receipts
@@ -49,6 +53,10 @@ func (api *BaseAPI) getReceipts(ctx context.Context, tx kv.TemporalTx, block *ty
 	}
 
 	return api.receiptsGenerator.GetReceipts(ctx, chainConfig, tx, block)
+}
+
+func (api *APIImpl) GetBlockReceiptsTrace(ctx context.Context, numberOrHash rpc.BlockNumberOrHash) (map[string]interface{}, error) {
+	return nil, errors.New("not implemented in ETH API, use ETH Trace API")
 }
 
 func (api *BaseAPI) getReceipt(ctx context.Context, cc *chain.Config, tx kv.TemporalTx, header *types.Header, txn types.Transaction, index int, txNum uint64) (*types.Receipt, error) {
@@ -568,6 +576,72 @@ func (api *APIImpl) GetBlockReceipts(ctx context.Context, numberOrHash rpc.Block
 	}
 
 	return result, nil
+}
+
+func marshalReceipt(receipt *types.Receipt, txn types.Transaction, chainConfig *chain.Config, header *types.Header, txnHash common.Hash, signed bool) map[string]interface{} {
+	var chainId *big.Int
+	switch t := txn.(type) {
+	case *types.LegacyTx:
+		if t.Protected() {
+			chainId = types.DeriveChainId(&t.V).ToBig()
+		}
+	default:
+		chainId = txn.GetChainID().ToBig()
+	}
+
+	var from common.Address
+	if signed {
+		signer := types.LatestSignerForChainID(chainId)
+		from, _ = txn.Sender(*signer)
+	}
+
+	fields := map[string]interface{}{
+		"transactionHash":   txnHash,
+		"transactionIndex":  hexutil.Uint64(receipt.TransactionIndex),
+		"from":              from,
+		"to":                txn.GetTo(),
+		"type":              hexutil.Uint(txn.Type()),
+		"gasUsed":           hexutil.Uint64(receipt.GasUsed),
+		"cumulativeGasUsed": hexutil.Uint64(receipt.CumulativeGasUsed),
+		"contractAddress":   nil,
+		"logs":              receipt.Logs,
+		"logsBloom":         types.CreateBloom(types.Receipts{receipt}),
+	}
+
+	if !chainConfig.IsLondon(header.Number.Uint64()) {
+		fields["effectiveGasPrice"] = hexutil.Uint64(txn.GetPrice().Uint64())
+	} else {
+		baseFee, _ := uint256.FromBig(header.BaseFee)
+		gasPrice := new(big.Int).Add(header.BaseFee, txn.GetEffectiveGasTip(baseFee).ToBig())
+		fields["effectiveGasPrice"] = hexutil.Uint64(gasPrice.Uint64())
+	}
+
+	// Assign receipt status.
+	fields["status"] = hexutil.Uint64(receipt.Status)
+	if receipt.Logs == nil {
+		fields["logs"] = [][]*types.Log{}
+	}
+
+	// If the ContractAddress is 20 0x0 bytes, assume it is not a contract creation
+	if receipt.ContractAddress != (common.Address{}) {
+		fields["contractAddress"] = receipt.ContractAddress
+	}
+
+	// Set derived blob related fields
+	numBlobs := len(txn.GetBlobHashes())
+	if numBlobs > 0 {
+		if header.ExcessBlobGas == nil {
+			log.Warn("excess blob gas not set when trying to marshal blob tx")
+		} else {
+			blobGasPrice, err := misc.GetBlobGasPrice(chainConfig, *header.ExcessBlobGas, header.Time)
+			if err != nil {
+				log.Error(err.Error())
+			}
+			fields["blobGasPrice"] = (*hexutil.Big)(blobGasPrice.ToBig())
+			fields["blobGasUsed"] = hexutil.Uint64(misc.GetBlobGasUsed(numBlobs))
+		}
+	}
+	return fields
 }
 
 // MapTxNum2BlockNumIter - enrich iterator by TxNumbers, adding more info:
