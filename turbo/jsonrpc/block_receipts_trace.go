@@ -3,7 +3,6 @@ package jsonrpc
 import (
 	"context"
 	"fmt"
-	"math/big"
 
 	"github.com/erigontech/erigon-lib/common"
 	txpool "github.com/erigontech/erigon-lib/gointerfaces/txpoolproto"
@@ -12,7 +11,6 @@ import (
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/eth/ethutils"
 	bortypes "github.com/erigontech/erigon/polygon/bor/types"
-	"github.com/holiman/uint256"
 
 	"github.com/erigontech/erigon-lib/common/math"
 
@@ -24,143 +22,6 @@ import (
 )
 
 const enable_testing = true
-
-func getETHTransaction(txJson *ethapi.RPCTransaction) (types.Transaction, error) {
-	gasPrice, value := uint256.NewInt(0), uint256.NewInt(0)
-	var overflow bool
-	var chainId *uint256.Int
-
-	if txJson.Value != nil {
-		value, overflow = uint256.FromBig((*big.Int)(txJson.Value))
-		if overflow {
-			return nil, fmt.Errorf("value field caused an overflow (uint256)")
-		}
-	}
-
-	if txJson.GasPrice != nil {
-		gasPrice, overflow = uint256.FromBig((*big.Int)(txJson.GasPrice))
-		if overflow {
-			return nil, fmt.Errorf("gasPrice field caused an overflow (uint256)")
-		}
-	}
-
-	if txJson.ChainID != nil {
-		chainId, overflow = uint256.FromBig((*big.Int)(txJson.ChainID))
-		if overflow {
-			return nil, fmt.Errorf("chainId field caused an overflow (uint256)")
-		}
-	}
-
-	switch txJson.Type {
-	case types.LegacyTxType, types.AccessListTxType:
-		var toAddr = common.Address{}
-		var legacyTx *types.LegacyTx
-
-		if txJson.To != nil {
-			toAddr = *txJson.To
-			legacyTx = types.NewTransaction(uint64(txJson.Nonce), toAddr, value, uint64(txJson.Gas), gasPrice, txJson.Input)
-		} else {
-			legacyTx = types.NewContractCreation(uint64(txJson.Nonce), value, uint64(txJson.Gas), gasPrice, txJson.Input)
-		}
-
-		legacyTx.V.SetFromBig(txJson.V.ToInt())
-		legacyTx.S.SetFromBig(txJson.S.ToInt())
-		legacyTx.R.SetFromBig(txJson.R.ToInt())
-
-		if txJson.Type == types.AccessListTxType {
-			accessListTx := types.AccessListTx{
-				LegacyTx:   *legacyTx,
-				ChainID:    chainId,
-				AccessList: *txJson.Accesses,
-			}
-
-			return &accessListTx, nil
-		} else {
-			return legacyTx, nil
-		}
-
-	case types.DynamicFeeTxType:
-		var tip *uint256.Int
-		var feeCap *uint256.Int
-		if txJson.Tip != nil {
-			tip, overflow = uint256.FromBig((*big.Int)(txJson.Tip))
-			if overflow {
-				return nil, fmt.Errorf("maxPriorityFeePerGas field caused an overflow (uint256)")
-			}
-		}
-
-		if txJson.FeeCap != nil {
-			feeCap, overflow = uint256.FromBig((*big.Int)(txJson.FeeCap))
-			if overflow {
-				return nil, fmt.Errorf("maxFeePerGas field caused an overflow (uint256)")
-			}
-		}
-
-		dynamicFeeTx := types.DynamicFeeTransaction{
-			CommonTx: types.CommonTx{
-				Nonce: uint64(txJson.Nonce),
-				To:    txJson.To,
-				Value: value,
-				Gas:   uint64(txJson.Gas),
-				Data:  txJson.Input,
-			},
-			ChainID:    chainId,
-			Tip:        tip,
-			FeeCap:     feeCap,
-			AccessList: *txJson.Accesses,
-		}
-
-		dynamicFeeTx.V.SetFromBig(txJson.V.ToInt())
-		dynamicFeeTx.S.SetFromBig(txJson.S.ToInt())
-		dynamicFeeTx.R.SetFromBig(txJson.R.ToInt())
-
-		return &dynamicFeeTx, nil
-
-	case types.BlobTxType:
-		var tip *uint256.Int
-		var feeCap *uint256.Int
-		if txJson.Tip != nil {
-			tip, overflow = uint256.FromBig((*big.Int)(txJson.Tip))
-			if overflow {
-				return nil, fmt.Errorf("maxPriorityFeePerGas field caused an overflow (uint256)")
-			}
-		}
-
-		if txJson.FeeCap != nil {
-			feeCap, overflow = uint256.FromBig((*big.Int)(txJson.FeeCap))
-			if overflow {
-				return nil, fmt.Errorf("maxFeePerGas field caused an overflow (uint256)")
-			}
-		}
-
-		blobTx := types.BlobTx{DynamicFeeTransaction: types.DynamicFeeTransaction{
-			CommonTx: types.CommonTx{
-				Nonce: uint64(txJson.Nonce),
-				Gas:   uint64(txJson.Gas),
-				To:    txJson.To,
-				Value: value,
-				Data:  txJson.Input,
-			},
-			ChainID:    chainId,
-			Tip:        tip,
-			FeeCap:     feeCap,
-			AccessList: *txJson.Accesses,
-		},
-			BlobVersionedHashes: txJson.BlobVersionedHashes,
-		}
-
-		blobTx.MaxFeePerBlobGas.SetFromBig(txJson.MaxFeePerBlobGas.ToInt())
-
-		blobTx.V.SetFromBig(txJson.V.ToInt())
-		blobTx.S.SetFromBig(txJson.S.ToInt())
-		blobTx.R.SetFromBig(txJson.R.ToInt())
-
-		return &blobTx, nil
-
-	default:
-		return nil, nil
-	}
-}
 
 type APIEthTraceImpl struct {
 	APIImpl
