@@ -311,6 +311,8 @@ func makePurifiedDomains(db kv.RwDB, dirs datadir.Dirs, logger log.Logger, domai
 		tbl = kv.HeaderTD
 	case "receipt":
 		tbl = kv.BadHeaderNumber
+	case kv.RCacheDomain.String():
+		tbl = kv.BlockBody
 	default:
 		return fmt.Errorf("invalid domainName %s", domainName)
 	}
@@ -409,10 +411,10 @@ func makePurifiedDomains(db kv.RwDB, dirs datadir.Dirs, logger log.Logger, domai
 				skipped++
 				continue
 			}
-			if err := comp.AddWord(bufKey); err != nil {
+			if _, err := comp.Write(bufKey); err != nil {
 				return fmt.Errorf("failed to add key %x: %w", bufKey, err)
 			}
-			if err := comp.AddWord(bufVal); err != nil {
+			if _, err := comp.Write(bufVal); err != nil {
 				return fmt.Errorf("failed to add val %x: %w", bufVal, err)
 			}
 			count++

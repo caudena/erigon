@@ -87,8 +87,9 @@ type ExecuteBlockCfg struct {
 	syncCfg   ethconfig.Sync
 	genesis   *types.Genesis
 
-	silkworm        *silkworm.Silkworm
-	blockProduction bool
+	silkworm            *silkworm.Silkworm
+	blockProduction     bool
+	polygonExtraReceipt bool
 
 	applyWorker, applyWorkerMining *exec3.Worker
 }
@@ -103,37 +104,38 @@ func StageExecuteBlocksCfg(
 	notifications *shards.Notifications,
 	stateStream bool,
 	badBlockHalt bool,
-
 	dirs datadir.Dirs,
 	blockReader services.FullBlockReader,
 	hd headerDownloader,
 	genesis *types.Genesis,
 	syncCfg ethconfig.Sync,
 	silkworm *silkworm.Silkworm,
+	polygonExtraReceipt bool,
 ) ExecuteBlockCfg {
 	if dirs.SnapDomain == "" {
 		panic("empty `dirs` variable")
 	}
 
 	return ExecuteBlockCfg{
-		db:                db,
-		prune:             pm,
-		batchSize:         batchSize,
-		chainConfig:       chainConfig,
-		engine:            engine,
-		vmConfig:          vmConfig,
-		dirs:              dirs,
-		notifications:     notifications,
-		stateStream:       stateStream,
-		badBlockHalt:      badBlockHalt,
-		blockReader:       blockReader,
-		hd:                hd,
-		genesis:           genesis,
-		historyV3:         true,
-		syncCfg:           syncCfg,
-		silkworm:          silkworm,
-		applyWorker:       exec3.NewWorker(nil, log.Root(), context.Background(), false, db, nil, blockReader, chainConfig, genesis, nil, engine, dirs, false),
-		applyWorkerMining: exec3.NewWorker(nil, log.Root(), context.Background(), false, db, nil, blockReader, chainConfig, genesis, nil, engine, dirs, true),
+		db:                  db,
+		prune:               pm,
+		batchSize:           batchSize,
+		chainConfig:         chainConfig,
+		engine:              engine,
+		vmConfig:            vmConfig,
+		dirs:                dirs,
+		notifications:       notifications,
+		stateStream:         stateStream,
+		badBlockHalt:        badBlockHalt,
+		blockReader:         blockReader,
+		hd:                  hd,
+		genesis:             genesis,
+		historyV3:           true,
+		syncCfg:             syncCfg,
+		silkworm:            silkworm,
+		polygonExtraReceipt: polygonExtraReceipt,
+		applyWorker:         exec3.NewWorker(nil, log.Root(), context.Background(), false, db, nil, blockReader, chainConfig, genesis, nil, engine, dirs, false),
+		applyWorkerMining:   exec3.NewWorker(nil, log.Root(), context.Background(), false, db, nil, blockReader, chainConfig, genesis, nil, engine, dirs, true),
 	}
 }
 
@@ -167,7 +169,8 @@ func ExecBlockV3(s *StageState, u Unwinder, txc wrap.TxContainer, toBlock uint64
 
 var ErrTooDeepUnwind = errors.New("too deep unwind")
 
-func unwindExec3(u *UnwindState, s *StageState, txc wrap.TxContainer, ctx context.Context, br services.FullBlockReader, accumulator *shards.Accumulator, logger log.Logger) (err error) {
+func unwindExec3(u *UnwindState, s *StageState, txc wrap.TxContainer, ctx context.Context, cfg ExecuteBlockCfg, accumulator *shards.Accumulator, logger log.Logger) (err error) {
+	br := cfg.blockReader
 	var domains *libstate.SharedDomains
 	if txc.Doms == nil {
 		domains, err = libstate.NewSharedDomains(txc.Tx, logger)
@@ -178,7 +181,7 @@ func unwindExec3(u *UnwindState, s *StageState, txc wrap.TxContainer, ctx contex
 	} else {
 		domains = txc.Doms
 	}
-	rs := state.NewStateV3(domains, logger)
+	rs := state.NewStateV3(domains, cfg.syncCfg, cfg.chainConfig.Bor != nil, logger)
 
 	txNumsReader := rawdbv3.TxNums.WithCustomReadTxNumFunc(freezeblocks.ReadTxNumFuncFromBlockReader(ctx, br))
 
@@ -379,7 +382,7 @@ func unwindExecutionStage(u *UnwindState, s *StageState, txc wrap.TxContainer, c
 		accumulator.StartChange(u.UnwindPoint, hash, txs, true)
 	}
 
-	return unwindExec3(u, s, txc, ctx, cfg.blockReader, accumulator, logger)
+	return unwindExec3(u, s, txc, ctx, cfg, accumulator, logger)
 }
 
 func PruneExecutionStage(s *PruneState, tx kv.RwTx, cfg ExecuteBlockCfg, ctx context.Context, logger log.Logger) (err error) {
@@ -421,20 +424,26 @@ func PruneExecutionStage(s *PruneState, tx kv.RwTx, cfg ExecuteBlockCfg, ctx con
 	//  - need also leave some time to prune blocks
 	//  - need keep "fsync" time of db fast
 	// Means - the best is:
-	//  - stop prune when `tx.SpaceDirty()` is big
+	//  - sto
+	// p prune when `tx.SpaceDirty()` is big
 	//  - and set ~500ms timeout
 	// because on slow disks - prune is slower. but for now - let's tune for nvme first, and add `tx.SpaceDirty()` check later https://github.com/erigontech/erigon/issues/11635
 	pruneTimeout := 250 * time.Millisecond
 	if s.CurrentSyncCycle.IsInitialCycle {
 		pruneTimeout = 12 * time.Hour
+
+		// allow greedy prune on non-chain-tip
+		if err = tx.(*temporal.Tx).AggTx().(*libstate.AggregatorRoTx).GreedyPruneHistory(ctx, kv.CommitmentDomain, tx); err != nil {
+			return err
+		}
 	}
-	if _, err = tx.(*temporal.Tx).AggTx().(*libstate.AggregatorRoTx).PruneSmallBatches(ctx, pruneTimeout, tx); err != nil { // prune part of retired data, before commit
+	if _, err := tx.(*temporal.Tx).AggTx().(*libstate.AggregatorRoTx).PruneSmallBatches(ctx, pruneTimeout, tx); err != nil {
 		return err
 	}
 
 	// prune receipts cache
-	if cfg.syncCfg.PersistReceipts > 0 && s.ForwardProgress > cfg.syncCfg.PersistReceipts {
-		pruneTo := s.ForwardProgress - cfg.syncCfg.PersistReceipts
+	if cfg.syncCfg.PersistReceiptsV1 > 0 && s.ForwardProgress > cfg.syncCfg.PersistReceiptsV1 {
+		pruneTo := s.ForwardProgress - cfg.syncCfg.PersistReceiptsV1
 		pruneLimit := 10
 		if s.CurrentSyncCycle.IsInitialCycle {
 			pruneLimit = -1

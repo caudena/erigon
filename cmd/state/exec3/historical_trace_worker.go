@@ -108,6 +108,7 @@ func NewHistoricalTraceWorker(
 		ctx:         ctx,
 		logger:      logger,
 		taskGasPool: new(core.GasPool),
+		stateWriter: state.NewNoopWriter(),
 	}
 	ie.ibs = state.New(ie.stateReader)
 
@@ -118,6 +119,7 @@ func (rw *HistoricalTraceWorker) Run() (err error) {
 	defer func() { // convert panic to err - because it's background workers
 		if rec := recover(); rec != nil {
 			err = fmt.Errorf("HistoricalTraceWorker panic: %s, %s", rec, dbg.Stack())
+			log.Warn("[HistoricalTraceWorker]", "err", err)
 		}
 	}()
 	defer rw.evm.JumpDestCache.LogStats()
@@ -142,7 +144,6 @@ func (rw *HistoricalTraceWorker) RunTxTask(txTask *state.TxTask) {
 
 	rw.stateReader.SetTxNum(txTask.TxNum)
 	rw.stateReader.ResetReadSet()
-	rw.stateWriter = state.NewNoopWriter()
 
 	rw.ibs.Reset()
 	ibs := rw.ibs
@@ -244,6 +245,9 @@ type ExecArgs struct {
 	Dirs        datadir.Dirs
 	ChainConfig *chain.Config
 	Workers     int
+
+	ReGenReceiptDomain bool
+	ReGenRCacheDomain  bool
 }
 
 func NewHistoricalTraceWorkers(consumer TraceConsumer, cfg *ExecArgs, ctx context.Context, toTxNum uint64, in *state.QueueWithRetry, workerCount int, outputTxNum *atomic.Uint64, logger log.Logger) *errgroup.Group {
@@ -258,6 +262,7 @@ func NewHistoricalTraceWorkers(consumer TraceConsumer, cfg *ExecArgs, ctx contex
 		defer func() {
 			if rec := recover(); rec != nil {
 				err = fmt.Errorf("'reduce worker' paniced: %s, %s", rec, dbg.Stack())
+				log.Warn("[HistoricalTraceWorker]", "err", err)
 			}
 		}()
 		defer rws.Close()
@@ -267,6 +272,7 @@ func NewHistoricalTraceWorkers(consumer TraceConsumer, cfg *ExecArgs, ctx contex
 		defer func() {
 			if rec := recover(); rec != nil {
 				err = fmt.Errorf("'reduce worker' paniced: %s, %s", rec, dbg.Stack())
+				log.Warn("[StageCustomTrace]", "err", err)
 			}
 		}()
 		return doHistoryReduce(consumer, cfg.ChainDB, ctx, toTxNum, outputTxNum, rws)
@@ -348,9 +354,16 @@ func processResultQueueHistorical(consumer TraceConsumer, rws *state.ResultsQueu
 }
 
 func CustomTraceMapReduce(fromBlock, toBlock uint64, consumer TraceConsumer, ctx context.Context, tx kv.TemporalTx, cfg *ExecArgs, logger log.Logger) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("'CustomTraceMapReduce' paniced: %s, %s", rec, dbg.Stack())
+			log.Warn("[StageCustomTrace]", "err", err)
+		}
+	}()
+
 	br := cfg.BlockReader
 	chainConfig := cfg.ChainConfig
-	if chainConfig.ChainName == networkname.Gnosis {
+	if chainConfig.ChainName == networkname.Gnosis && cfg.Workers > 1 {
 		panic("gnosis consensus doesn't support parallel exec yet: https://github.com/erigontech/erigon/issues/12054")
 	}
 
