@@ -1266,15 +1266,10 @@ func WriteDBCommitmentHistoryEnabled(tx kv.RwTx, enabled bool) error {
 	return nil
 }
 
-func ReadReceiptCacheV2(tx kv.TemporalTx, blockNum uint64, blockHash common.Hash, txnIndex uint32, txnHash common.Hash, txNumReader rawdbv3.TxNumsReader) (*types.Receipt, bool, error) {
-	_min, err := txNumReader.Min(tx, blockNum)
+func ReadReceiptCacheV2(tx kv.TemporalTx, blockNum uint64, blockHash common.Hash, txNum uint64, txnHash common.Hash) (*types.Receipt, bool, error) {
+	v, ok, err := tx.HistorySeek(kv.RCacheDomain, receiptCacheKey, txNum+1 /*history storing values BEFORE-change*/)
 	if err != nil {
-		return nil, false, err
-	}
-
-	v, ok, err := tx.HistorySeek(kv.RCacheDomain, receiptCacheKey, _min+uint64(txnIndex)+1)
-	if err != nil {
-		return nil, false, fmt.Errorf("unexpected error, couldn't find changeset: txNum=%d, %w", _min+uint64(txnIndex)+1, err)
+		return nil, false, fmt.Errorf("unexpected error, couldn't find changeset: txNum=%d, %w", txNum, err)
 	}
 	if !ok {
 		return nil, false, nil
@@ -1312,7 +1307,7 @@ func ReadReceiptsCacheV2(tx kv.TemporalTx, block *types.Block, txNumReader rawdb
 			return nil, fmt.Errorf("unexpected error, couldn't find changeset: txNum=%d, %w", txnID, err)
 		}
 		if !ok {
-			return res, nil
+			continue
 		}
 		if len(v) == 0 {
 			continue
@@ -1469,14 +1464,14 @@ func WriteReceiptsCache(tx kv.RwTx, blockNum uint64, blockHash common.Hash, rece
 	buf := bytes.NewBuffer(nil)
 	for txnIndex, receipt := range receipts {
 		buf.Reset()
-
-		if txnIndex != int(receipts[txnIndex].TransactionIndex) {
-			panic(fmt.Sprintf("assert: txnIndex is wrong %d %d, blockNum=%d, txnIdx=%d", txnIndex, receipts[txnIndex].TransactionIndex, blockNum, txnIndex))
-		}
-		if len(receipt.Logs) > 0 && int(receipt.FirstLogIndexWithinBlock) != int(receipt.Logs[0].Index) {
-			panic(fmt.Sprintf("assert: FirstLogIndexWithinBlock is wrong: %d %d, blockNum=%d, txnIdx=%d", receipt.FirstLogIndexWithinBlock, receipt.Logs[0].Index, blockNum, txnIndex))
-		}
 		if receipt != nil {
+			if txnIndex != int(receipts[txnIndex].TransactionIndex) {
+				panic(fmt.Sprintf("assert: txnIndex is wrong %d %d, blockNum=%d, txnIdx=%d", txnIndex, receipts[txnIndex].TransactionIndex, blockNum, txnIndex))
+			}
+			if len(receipt.Logs) > 0 && int(receipt.FirstLogIndexWithinBlock) != int(receipt.Logs[0].Index) {
+				panic(fmt.Sprintf("assert: FirstLogIndexWithinBlock is wrong: %d %d, blockNum=%d, txnIdx=%d", receipt.FirstLogIndexWithinBlock, receipt.Logs[0].Index, blockNum, txnIndex))
+			}
+
 			storageReceipt := (*types.ReceiptForStorage)(receipt)
 			err := rlp.Encode(buf, storageReceipt)
 			if err != nil {

@@ -423,10 +423,8 @@ func TestAggregatorV3_RestartOnDatadir(t *testing.T) {
 }
 
 type runCfg struct {
-	aggStep      uint64
-	useBplus     bool
-	compressVals bool
-	largeVals    bool
+	aggStep  uint64
+	useBplus bool
 }
 
 // here we create a bunch of updates for further aggregation.
@@ -620,15 +618,15 @@ func TestAggregatorV3_PruneSmallBatches(t *testing.T) {
 	)
 	maxInt := math.MaxInt
 	{
-		it, err := ac.RangeLatest(tx, kv.AccountsDomain, nil, nil, maxInt)
+		it, err := ac.DebugRangeLatest(tx, kv.AccountsDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		accountsRange = extractKVErrIterator(t, it)
 
-		it, err = ac.RangeLatest(tx, kv.StorageDomain, nil, nil, maxInt)
+		it, err = ac.DebugRangeLatest(tx, kv.StorageDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		storageRange = extractKVErrIterator(t, it)
 
-		it, err = ac.RangeLatest(tx, kv.CodeDomain, nil, nil, maxInt)
+		it, err = ac.DebugRangeLatest(tx, kv.CodeDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		codeRange = extractKVErrIterator(t, it)
 
@@ -683,15 +681,15 @@ func TestAggregatorV3_PruneSmallBatches(t *testing.T) {
 	)
 
 	{
-		it, err := ac.RangeLatest(afterTx, kv.AccountsDomain, nil, nil, maxInt)
+		it, err := ac.DebugRangeLatest(afterTx, kv.AccountsDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		accountsRangeAfter = extractKVErrIterator(t, it)
 
-		it, err = ac.RangeLatest(afterTx, kv.StorageDomain, nil, nil, maxInt)
+		it, err = ac.DebugRangeLatest(afterTx, kv.StorageDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		storageRangeAfter = extractKVErrIterator(t, it)
 
-		it, err = ac.RangeLatest(afterTx, kv.CodeDomain, nil, nil, maxInt)
+		it, err = ac.DebugRangeLatest(afterTx, kv.CodeDomain, nil, nil, maxInt)
 		require.NoError(t, err)
 		codeRangeAfter = extractKVErrIterator(t, it)
 
@@ -1364,7 +1362,7 @@ func TestAggregatorV3_SharedDomains(t *testing.T) {
 	domains, err = NewSharedDomains(WrapTxWithCtx(rwTx, ac), log.New())
 	require.NoError(t, err)
 	defer domains.Close()
-	diffs := [kv.DomainLen][]DomainEntryDiff{}
+	diffs := [kv.DomainLen][]kv.DomainEntryDiff{}
 	for idx := range changesetAt5.Diffs {
 		diffs[idx] = changesetAt5.Diffs[idx].GetDiffSet()
 	}
@@ -1467,7 +1465,7 @@ func TestAggregator_RebuildCommitmentBasedOnFiles(t *testing.T) {
 	fnames := []string{}
 	for _, f := range ac.d[kv.CommitmentDomain].files {
 		var k, stateVal []byte
-		if ac.d[kv.CommitmentDomain].d.AccessorList&AccessorHashMap != 0 {
+		if ac.d[kv.CommitmentDomain].d.Accessors&AccessorHashMap != 0 {
 			idx := f.src.index.GetReaderFromPool()
 			r := seg.NewReader(f.src.decompressor.MakeGetter(), compression)
 

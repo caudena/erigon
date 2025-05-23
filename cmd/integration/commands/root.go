@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/semaphore"
 
+	"github.com/erigontech/erigon-lib/common/datadir"
 	"github.com/erigontech/erigon-lib/kv"
 	kv2 "github.com/erigontech/erigon-lib/kv/mdbx"
 	"github.com/erigontech/erigon-lib/kv/temporal"
@@ -109,9 +110,15 @@ func openDB(opts kv2.MdbxOpts, applyMigrations bool, logger log.Logger) (tdb kv.
 		}
 	}
 
+	dirs := datadir.New(datadirCli)
+	if err := CheckSaltFilesExist(dirs); err != nil {
+		return nil, err
+	}
+
 	_, _, agg, _, _, _, err := allSnapshots(context.Background(), rawDB, logger)
 	if err != nil {
 		return nil, err
 	}
-	return temporal.New(rawDB, agg)
+	tdb = temporal.New(rawDB, agg)
+	return tdb, nil
 }
