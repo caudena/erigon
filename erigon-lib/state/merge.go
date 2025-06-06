@@ -346,14 +346,14 @@ func mergeEfs(preval, val, buf []byte) ([]byte, error) {
 	for preIt.HasNext() {
 		v, err := preIt.Next()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("mergeEfs: preIt.Next %w", err)
 		}
 		newEf.AddOffset(v)
 	}
 	for efIt.HasNext() {
 		v, err := efIt.Next()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("mergeEfs: efIt.Next %w", err)
 		}
 		newEf.AddOffset(v)
 	}
@@ -394,7 +394,7 @@ func (dt *DomainRoTx) mergeFiles(ctx context.Context, domainFiles, indexFiles, h
 		}
 	}()
 	if indexIn, historyIn, err = dt.ht.mergeFiles(ctx, indexFiles, historyFiles, r.history, ps); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("ht.mergeFiles: %w", err)
 	}
 
 	if !r.values.needMerge {
@@ -687,7 +687,7 @@ func (iit *InvertedIndexRoTx) mergeFiles(ctx context.Context, files []*filesItem
 		return nil, fmt.Errorf("merge %s buildAccessor [%d-%d]: %w", iit.ii.filenameBase, startTxNum, endTxNum, err)
 	}
 	if outItem.index, err = recsplit.OpenIndex(iit.ii.efAccessorFilePath(fromStep, toStep)); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("merge %s OpenIndex [%d-%d]: %w", iit.ii.filenameBase, startTxNum, endTxNum, err)
 	}
 
 	closeItem = false
@@ -713,7 +713,7 @@ func (ht *HistoryRoTx) mergeFiles(ctx context.Context, indexFiles, historyFiles 
 		}
 	}()
 	if indexIn, err = ht.iit.mergeFiles(ctx, indexFiles, r.index.from, r.index.to, ps); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("iit.mergeFiles: %w", err)
 	}
 	if r.history.needMerge {
 		var comp *seg.Compressor
@@ -939,12 +939,12 @@ func (dt *DomainRoTx) cleanAfterMerge(mergedDomain, mergedHist, mergedIdx *files
 // in this case we need keep small files, but when history already merged to `frozen` state - then we can cleanup
 // all earlier small files, by mark tem as `canDelete=true`
 func (ht *HistoryRoTx) cleanAfterMerge(merged, mergedIdx *filesItem) {
+	ht.iit.cleanAfterMerge(mergedIdx)
 	if merged != nil && merged.endTxNum == 0 {
 		return
 	}
 	outs := ht.garbage(merged)
 	deleteMergeFile(ht.h.dirtyFiles, outs, ht.h.filenameBase, ht.h.logger)
-	ht.iit.cleanAfterMerge(mergedIdx)
 }
 
 // cleanAfterMerge - mark all small files before `f` as `canDelete=true`

@@ -24,12 +24,10 @@ import (
 	"hash"
 	"sync"
 
-	"github.com/erigontech/erigon-lib/log/v3"
-
 	"github.com/erigontech/erigon-lib/chain"
 	libcommon "github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/math"
-
+	"github.com/erigontech/erigon-lib/log/v3"
 	"github.com/erigontech/erigon/core/tracing"
 	"github.com/erigontech/erigon/core/vm/stack"
 )
@@ -131,6 +129,8 @@ func copyJumpTable(jt *JumpTable) *JumpTable {
 func NewEVMInterpreter(evm *EVM, cfg Config) *EVMInterpreter {
 	var jt *JumpTable
 	switch {
+	case evm.ChainRules().IsBhilai:
+		jt = &bhilaiInstructionSet
 	case evm.ChainRules().IsPrague:
 		jt = &pragueInstructionSet
 	case evm.ChainRules().IsCancun:

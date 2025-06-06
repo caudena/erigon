@@ -616,6 +616,7 @@ func (a *Aggregator) buildFiles(ctx context.Context, step uint64) error {
 	// indices are built concurrently
 	for iikey, ii := range a.iis {
 		if ii.disable {
+			log.Warn("[dbg] here1?", "n", ii.name)
 			continue
 		}
 
@@ -624,6 +625,7 @@ func (a *Aggregator) buildFiles(ctx context.Context, step uint64) error {
 		firstStepNotInFiles := dc.FirstStepNotInFiles()
 		dc.Close()
 		if step < firstStepNotInFiles {
+			log.Warn("[dbg] here2?", "n", ii.name, "step", step, "firstStepNotInFiles", firstStepNotInFiles)
 			continue
 		}
 
@@ -1695,34 +1697,18 @@ func (at *AggregatorRoTx) Unwind(ctx context.Context, tx kv.RwTx, txNumUnwindTo 
 func (at *AggregatorRoTx) MadvNormal() *AggregatorRoTx {
 	for _, d := range at.d {
 		for _, f := range d.files {
-			if f.src.decompressor != nil {
-				f.src.decompressor.MadvNormal()
-			}
-			if f.src.index != nil {
-				f.src.index.MadvNormal()
-			}
-			//if f.src.bindex != nil {
-			//	f.src.bindex.MadvNormal()
-			//}
-			//if f.src.existence != nil {
-			//	f.src.existence.MadvNormal()
-			//}
+			f.src.MadvNormal()
+		}
+		for _, f := range d.ht.files {
+			f.src.MadvNormal()
+		}
+		for _, f := range d.ht.iit.files {
+			f.src.MadvNormal()
 		}
 	}
 	for _, ii := range at.iis {
 		for _, f := range ii.files {
-			if f.src.decompressor != nil {
-				f.src.decompressor.MadvNormal()
-			}
-			if f.src.index != nil {
-				f.src.index.MadvNormal()
-			}
-			//if f.src.bindex != nil {
-			//	f.src.bindex.MadvNormal()
-			//}
-			//if f.src.existence != nil {
-			//	f.src.existence.MadvNormal()
-			//}
+			f.src.MadvNormal()
 		}
 	}
 	return at
@@ -1730,37 +1716,61 @@ func (at *AggregatorRoTx) MadvNormal() *AggregatorRoTx {
 func (at *AggregatorRoTx) DisableReadAhead() {
 	for _, d := range at.d {
 		for _, f := range d.files {
-			if f.src.decompressor != nil {
-				f.src.decompressor.DisableReadAhead()
-			}
-			if f.src.index != nil {
-				f.src.index.DisableReadAhead()
-			}
-			//if f.src.bindex != nil {
-			//	f.src.bindex.DisableReadAhead()
-			//}
-			//if f.src.existence != nil {
-			//	f.src.existence.DisableReadAhead()
-			//}
+			f.src.DisableReadAhead()
+		}
+		for _, f := range d.ht.files {
+			f.src.DisableReadAhead()
+		}
+		for _, f := range d.ht.iit.files {
+			f.src.DisableReadAhead()
 		}
 	}
 	for _, ii := range at.iis {
 		for _, f := range ii.files {
-			if f.src.decompressor != nil {
-				f.src.decompressor.DisableReadAhead()
-			}
-			if f.src.index != nil {
-				f.src.index.DisableReadAhead()
-			}
-			//if f.src.bindex != nil {
-			//	f.src.bindex.MadvNormal()
-			//}
-			//if f.src.existence != nil {
-			//	f.src.existence.MadvNormal()
-			//}
+			f.src.DisableReadAhead()
 		}
 	}
-
+}
+func (at *Aggregator) MadvNormal() *Aggregator {
+	at.dirtyFilesLock.Lock()
+	defer at.dirtyFilesLock.Unlock()
+	for _, d := range at.d {
+		for _, f := range d.dirtyFiles.Items() {
+			f.MadvNormal()
+		}
+		for _, f := range d.History.dirtyFiles.Items() {
+			f.MadvNormal()
+		}
+		for _, f := range d.History.InvertedIndex.dirtyFiles.Items() {
+			f.MadvNormal()
+		}
+	}
+	for _, ii := range at.iis {
+		for _, f := range ii.dirtyFiles.Items() {
+			f.MadvNormal()
+		}
+	}
+	return at
+}
+func (at *Aggregator) DisableReadAhead() {
+	at.dirtyFilesLock.Lock()
+	defer at.dirtyFilesLock.Unlock()
+	for _, d := range at.d {
+		for _, f := range d.dirtyFiles.Items() {
+			f.DisableReadAhead()
+		}
+		for _, f := range d.History.dirtyFiles.Items() {
+			f.DisableReadAhead()
+		}
+		for _, f := range d.History.InvertedIndex.dirtyFiles.Items() {
+			f.DisableReadAhead()
+		}
+	}
+	for _, ii := range at.iis {
+		for _, f := range ii.dirtyFiles.Items() {
+			f.DisableReadAhead()
+		}
+	}
 }
 
 func (at *AggregatorRoTx) Close() {

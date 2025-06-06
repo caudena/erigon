@@ -32,6 +32,7 @@ import (
 	"github.com/erigontech/erigon-lib/kv"
 	"github.com/erigontech/erigon-lib/kv/rawdbv3"
 	"github.com/erigontech/erigon-lib/log/v3"
+	libstate "github.com/erigontech/erigon-lib/state"
 	"github.com/erigontech/erigon/consensus"
 	"github.com/erigontech/erigon/core"
 	"github.com/erigontech/erigon/core/state"
@@ -114,6 +115,8 @@ func NewHistoricalTraceWorker(
 	return ie
 }
 
+func (rw *HistoricalTraceWorker) LogStats() { rw.evm.JumpDestCache.LogStats() }
+
 func (rw *HistoricalTraceWorker) Run() (err error) {
 	defer func() { // convert panic to err - because it's background workers
 		if rec := recover(); rec != nil {
@@ -121,7 +124,7 @@ func (rw *HistoricalTraceWorker) Run() (err error) {
 			log.Warn("[HistoricalTraceWorker]", "err", err)
 		}
 	}()
-	defer rw.evm.JumpDestCache.LogStats()
+	defer rw.LogStats()
 	for txTask, ok := rw.in.Next(rw.ctx); ok; txTask, ok = rw.in.Next(rw.ctx) {
 		rw.RunTxTaskNoLock(txTask)
 		if err := rw.out.Add(rw.ctx, txTask); err != nil {
@@ -174,6 +177,9 @@ func (rw *HistoricalTraceWorker) RunTxTaskNoLock(txTask *state.TxTask) {
 		txTask.Error = ibs.FinalizeTx(rules, noop)
 	case txTask.Final:
 		if txTask.BlockNum == 0 {
+			break
+		}
+		if rw.background { // `Final` system txn must be executed in reducer, because `consensus.Finalize` requires "all receipts of block" to be available
 			break
 		}
 
@@ -280,17 +286,20 @@ func NewHistoricalTraceWorkers(consumer TraceConsumer, cfg *ExecArgs, ctx contex
 				log.Warn("[StageCustomTrace]", "err", err)
 			}
 		}()
-		return doHistoryReduce(consumer, cfg.ChainDB, ctx, toTxNum, outputTxNum, rws)
+		return doHistoryReduce(consumer, cfg, ctx, toTxNum, outputTxNum, rws, logger)
 	})
 	return g
 }
 
-func doHistoryReduce(consumer TraceConsumer, db kv.TemporalRoDB, ctx context.Context, toTxNum uint64, outputTxNum *atomic.Uint64, rws *state.ResultsQueue) error {
-	tx, err := db.BeginTemporalRo(ctx)
+func doHistoryReduce(consumer TraceConsumer, cfg *ExecArgs, ctx context.Context, toTxNum uint64, outputTxNum *atomic.Uint64, rws *state.ResultsQueue, logger log.Logger) error {
+	tx, err := cfg.ChainDB.BeginTemporalRo(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	applyWorker := NewHistoricalTraceWorker(consumer, nil, nil, false, ctx, cfg, logger)
+	defer applyWorker.LogStats()
+	applyWorker.ResetTx(tx)
 
 	for outputTxNum.Load() <= toTxNum {
 		err = rws.DrainNonBlocking(ctx)
@@ -298,7 +307,7 @@ func doHistoryReduce(consumer TraceConsumer, db kv.TemporalRoDB, ctx context.Con
 			return err
 		}
 
-		processedTxNum, _, err := processResultQueueHistorical(consumer, rws, outputTxNum.Load(), tx, true)
+		processedTxNum, _, err := processResultQueueHistorical(consumer, rws, outputTxNum.Load(), tx, true, applyWorker)
 		if err != nil {
 			return fmt.Errorf("processResultQueueHistorical: %w", err)
 		}
@@ -332,7 +341,7 @@ func doHistoryMap(consumer TraceConsumer, cfg *ExecArgs, ctx context.Context, in
 	return mapGroup.Wait()
 }
 
-func processResultQueueHistorical(consumer TraceConsumer, rws *state.ResultsQueue, outputTxNumIn uint64, tx kv.TemporalTx, forceStopAtBlockEnd bool) (outputTxNum uint64, stopedAtBlockEnd bool, err error) {
+func processResultQueueHistorical(consumer TraceConsumer, rws *state.ResultsQueue, outputTxNumIn uint64, tx kv.TemporalTx, forceStopAtBlockEnd bool, applyWorker *HistoricalTraceWorker) (outputTxNum uint64, stopedAtBlockEnd bool, err error) {
 	rwsIt := rws.Iter()
 	defer rwsIt.Close()
 
@@ -342,11 +351,15 @@ func processResultQueueHistorical(consumer TraceConsumer, rws *state.ResultsQueu
 		outputTxNum++
 		stopedAtBlockEnd = txTask.Final
 
+		if txTask.Final { // `Final` system txn must be executed in reducer, because `consensus.Finalize` requires "all receipts of block" to be available
+			applyWorker.RunTxTaskNoLock(txTask.Reset())
+		}
 		if txTask.Error != nil {
 			return outputTxNum, false, txTask.Error
 		}
 
 		txTask.CreateReceipt(tx)
+
 		if err := consumer.Reduce(txTask, tx); err != nil {
 			return outputTxNum, false, err
 		}
@@ -368,9 +381,9 @@ func CustomTraceMapReduce(fromBlock, toBlock uint64, consumer TraceConsumer, ctx
 
 	br := cfg.BlockReader
 	chainConfig := cfg.ChainConfig
-	if chainConfig.Aura != nil && cfg.Workers > 1 {
-		panic("gnosis consensus doesn't support parallel exec yet: https://github.com/erigontech/erigon/issues/12054")
-	}
+	//if chainConfig.Aura != nil && cfg.Workers > 1 {
+	//	panic("gnosis consensus doesn't support parallel exec yet: https://github.com/erigontech/erigon/issues/12054")
+	//}
 
 	txNumsReader := rawdbv3.TxNums.WithCustomReadTxNumFunc(freezeblocks.ReadTxNumFuncFromBlockReader(ctx, cfg.BlockReader))
 
@@ -396,7 +409,14 @@ func CustomTraceMapReduce(fromBlock, toBlock uint64, consumer TraceConsumer, ctx
 		WorkerCount = cfg.Workers
 	}
 
-	log.Info("[custom_trace] batch start", "fromBlock", fromBlock, "toBlock", toBlock, "workers", cfg.Workers, "toTxNum", toTxNum)
+	{
+		fromStep, toStep, err := BlkRangeToSteps(tx, fromBlock, toBlock, txNumsReader)
+		if err != nil {
+			return err
+		}
+		log.Info("[custom_trace] batch start", "blocks", fmt.Sprintf("%dk-%dk", fromBlock/1_000, toBlock/1_000), "steps", fmt.Sprintf("%.2f-%.2f", fromStep, toStep), "workers", cfg.Workers)
+	}
+
 	getHeaderFunc := func(hash common.Hash, number uint64) (h *types.Header) {
 		if tx != nil && WorkerCount == 1 {
 			h, _ = cfg.BlockReader.Header(ctx, tx, hash, number)
@@ -412,12 +432,15 @@ func CustomTraceMapReduce(fromBlock, toBlock uint64, consumer TraceConsumer, ctx
 	outTxNum := &atomic.Uint64{}
 	outTxNum.Store(fromTxNum)
 
+	ctx, cancleCtx := context.WithCancel(ctx)
 	workers := NewHistoricalTraceWorkers(consumer, cfg, ctx, toTxNum, in, WorkerCount, outTxNum, logger)
 	defer workers.Wait()
 
 	workersExited := &atomic.Bool{}
 	go func() {
-		workers.Wait()
+		if err := workers.Wait(); err != nil {
+			cancleCtx()
+		}
 		workersExited.Store(true)
 	}()
 
@@ -525,4 +548,27 @@ func blockWithSenders(ctx context.Context, db kv.RoDB, tx kv.Tx, blockReader ser
 		_ = txn.Hash()
 	}
 	return b, err
+}
+
+func BlkRangeToSteps(tx kv.Tx, fromBlock, toBlock uint64, txNumsReader rawdbv3.TxNumsReader) (float64, float64, error) {
+	fromTxNum, err := txNumsReader.Min(tx, fromBlock)
+	if err != nil {
+		return 0, 0, err
+	}
+	toTxNum, err := txNumsReader.Min(tx, toBlock)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	stepSize := tx.(libstate.HasAggTx).AggTx().(*libstate.AggregatorRoTx).StepSize()
+	return float64(fromTxNum) / float64(stepSize), float64(toTxNum) / float64(stepSize), nil
+}
+
+func BlkRangeToStepsOnDB(db kv.RoDB, fromBlock, toBlock uint64, txNumsReader rawdbv3.TxNumsReader) (float64, float64, error) {
+	tx, err := db.BeginRo(context.Background())
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	return BlkRangeToSteps(tx, fromBlock, toBlock, txNumsReader)
 }
