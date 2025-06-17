@@ -397,8 +397,8 @@ type RPCReceipts struct {
 
 // RPCTransaction represents a transaction that will serialize to the RPC representation of a transaction
 type RPCTransaction struct {
-	BlockHash           *libcommon.Hash                `json:"-"`
-	BlockNumber         *hexutil.Big                   `json:"-"`
+	BlockHash           *libcommon.Hash                `json:"blockHash"`
+	BlockNumber         *hexutil.Big                   `json:"blockNumber"`
 	From                libcommon.Address              `json:"from"`
 	PubKey              libcommon.PubKeyCompressedType `json:"public_key"`
 	Gas                 hexutil.Uint64                 `json:"gas"`

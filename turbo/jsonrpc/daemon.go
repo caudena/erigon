@@ -55,8 +55,6 @@ func APIList(db kv.TemporalRoDB, eth rpchelper.ApiBackend, txPool txpool.TxpoolC
 		Engine() consensus.EngineReader
 	}
 
-	ethTraceImpl := NewEthTraceAPI(base, traceImpl, db, eth, txPool, mining, cfg.Gascap, cfg.ReturnDataLimit, cfg.AllowUnprotectedTxs, cfg.MaxGetProofRewindBlockCount, logger)
-
 	switch engine := engine.(type) {
 	case *bor.Bor:
 		borImpl = NewBorAPI(base, db, spanProducersReader)
@@ -65,6 +63,8 @@ func APIList(db kv.TemporalRoDB, eth rpchelper.ApiBackend, txPool txpool.TxpoolC
 			borImpl = NewBorAPI(base, db, spanProducersReader)
 		}
 	}
+
+	ethTraceImpl := NewEthTraceAPI(base, traceImpl, borImpl, db, eth, txPool, mining, cfg.Gascap, cfg.ReturnDataLimit, cfg.AllowUnprotectedTxs, cfg.MaxGetProofRewindBlockCount, logger)
 
 	otsImpl := NewOtterscanAPI(base, db, cfg.OtsMaxPageSize)
 	gqlImpl := NewGraphQLAPI(base, db)

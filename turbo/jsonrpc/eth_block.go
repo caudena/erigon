@@ -252,6 +252,10 @@ func (api *APIImpl) GetBlockByNumber(ctx context.Context, number rpc.BlockNumber
 		}
 	}
 
+	if borTx != nil {
+		log.Info("GetBlockByNumber: found bor transaction", "block", b.NumberU64(), "hash", b.Hash(), "borTxHash", borTxHash)
+	}
+
 	response, err := ethapi.RPCMarshalBlockEx(b, true, fullTx, borTx, borTxHash, additionalFields)
 	if err == nil && number == rpc.PendingBlockNumber {
 		// Pending blocks need to nil out a few fields

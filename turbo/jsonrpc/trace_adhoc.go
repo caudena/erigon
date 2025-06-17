@@ -86,7 +86,7 @@ type TraceCallResult struct {
 	StateDiff       map[libcommon.Address]*StateDiffAccount `json:"stateDiff"`
 	Trace           []*ParityTrace                          `json:"trace"`
 	VmTrace         *VmTrace                                `json:"vmTrace"`
-	TransactionHash *libcommon.Hash                         `json:"-"`
+	TransactionHash *libcommon.Hash                         `json:"transactionHash,omitempty"`
 }
 
 // StateDiffAccount is the part of `trace_call` response that is under "stateDiff" tag

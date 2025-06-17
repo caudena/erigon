@@ -121,7 +121,7 @@ func (api *BorImpl) GetAuthor(blockNrOrHash *rpc.BlockNumberOrHash) (*common.Add
 		header = rawdb.ReadCurrentHeader(tx)
 	} else {
 		if blockNr, ok := blockNrOrHash.Number(); ok {
-			header = rawdb.ReadHeaderByNumber(tx, uint64(blockNr))
+			header,_ = api._blockReader.HeaderByNumber(ctx, tx, uint64(blockNr))
 			if blockNr == rpc.LatestBlockNumber {
 				header = rawdb.ReadCurrentHeader(tx)
 			}
