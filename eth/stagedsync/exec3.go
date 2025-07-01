@@ -46,9 +46,9 @@ import (
 	"github.com/erigontech/erigon/core/types"
 	"github.com/erigontech/erigon/eth/ethconfig/estimate"
 	"github.com/erigontech/erigon/eth/stagedsync/stages"
+	"github.com/erigontech/erigon/execution/exec3"
 	"github.com/erigontech/erigon/turbo/services"
 	"github.com/erigontech/erigon/turbo/shards"
-	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 )
 
 var (
@@ -138,7 +138,7 @@ func (p *Progress) Log(suffix string, rs *state.StateV3, in *state.QueueWithRetr
 func restoreTxNum(ctx context.Context, cfg *ExecuteBlockCfg, applyTx kv.Tx, doms *state2.SharedDomains, maxBlockNum uint64) (
 	inputTxNum uint64, maxTxNum uint64, offsetFromBlockBeginning uint64, err error) {
 
-	txNumsReader := rawdbv3.TxNums.WithCustomReadTxNumFunc(freezeblocks.TxBlockIndexFromBlockReader(ctx, cfg.blockReader))
+	txNumsReader := cfg.blockReader.TxnumReader(ctx)
 
 	inputTxNum = doms.TxNum()
 
@@ -438,7 +438,7 @@ func ExecV3(ctx context.Context,
 		// it also warmsup state a bit - by touching senders/coninbase accounts and code
 		var clean func()
 
-		readAhead, clean = blocksReadAhead(ctx, &cfg, 4)
+		readAhead, clean = exec3.BlocksReadAhead(ctx, 4, cfg.db, cfg.engine, cfg.blockReader)
 		defer clean()
 	}
 
@@ -687,11 +687,16 @@ Loop:
 				t1 = time.Since(tt) + ts
 
 				tt = time.Now()
-				if err = aggregatorRo.GreedyPruneHistory(ctx, kv.CommitmentDomain, executor.tx()); err != nil {
-					return err
+				pruneTimeout := 250 * time.Millisecond
+				if initialCycle {
+					pruneTimeout = 10 * time.Hour
+
+					if err = aggregatorRo.GreedyPruneHistory(ctx, kv.CommitmentDomain, executor.tx()); err != nil {
+						return err
+					}
 				}
 
-				if _, err := aggregatorRo.PruneSmallBatches(ctx, 10*time.Hour, executor.tx()); err != nil {
+				if _, err := aggregatorRo.PruneSmallBatches(ctx, pruneTimeout, executor.tx()); err != nil {
 					return err
 				}
 				t3 = time.Since(tt)
@@ -702,7 +707,7 @@ Loop:
 				}
 
 				// on chain-tip: if batch is full then stop execution - to allow stages commit
-				if !execStage.CurrentSyncCycle.IsInitialCycle {
+				if !initialCycle {
 					break Loop
 				}
 				logger.Info("Committed", "time", time.Since(commitStart),

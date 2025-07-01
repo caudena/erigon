@@ -597,7 +597,12 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 
 	if chainConfig.Bor != nil {
 		if !config.WithoutHeimdall {
-			heimdallClient = heimdall.NewHttpClient(config.HeimdallURL, logger, heimdall.WithApiVersioner(ctx))
+			heimdallClient = heimdall.NewHttpClient(
+				config.HeimdallURL,
+				logger,
+				heimdall.WithApiVersioner(ctx),
+				heimdall.WithHttpMaxRetries(heimdall.MaxRetriesUnlimited), // HeimdallV2 causes downtime, which can last up to 10-30 mins. It needs to be removed after HeimdallV2 upgrade
+			)
 		}
 
 		if config.PolygonSync {
@@ -1880,16 +1885,9 @@ func setBorDefaultMinerGasPrice(chainConfig *chain.Config, config *ethconfig.Con
 }
 
 func setDefaultMinerGasLimit(chainConfig *chain.Config, config *ethconfig.Config, logger log.Logger) {
-	if chainConfig.Bor != nil {
-		if config.Miner.GasLimit == nil {
-			gasLimit := ethconfig.BorDefaultMinerGasLimit
-			config.Miner.GasLimit = &gasLimit
-		}
-	} else {
-		if config.Miner.GasLimit == nil {
-			gasLimit := ethconfig.DefaultMinerGasLimit
-			config.Miner.GasLimit = &gasLimit
-		}
+	if config.Miner.GasLimit == nil {
+		gasLimit := ethconfig.DefaultMinerGasLimitByChain(config)
+		config.Miner.GasLimit = &gasLimit
 	}
 }
 

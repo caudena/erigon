@@ -25,9 +25,6 @@ import (
 	"math"
 	"strings"
 
-	"github.com/erigontech/erigon-lib/kv/rawdbv3"
-	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
-
 	"github.com/holiman/uint256"
 
 	libcommon "github.com/erigontech/erigon-lib/common"
@@ -825,8 +822,6 @@ func (api *TraceAPIImpl) ReplayTransaction(ctx context.Context, txHash libcommon
 		return nil, err
 	}
 
-	txNumsReader := rawdbv3.TxNums.WithCustomReadTxNumFunc(freezeblocks.TxBlockIndexFromBlockReader(ctx, api._blockReader))
-
 	if !ok {
 		if chainConfig.Bor == nil {
 			return nil, nil
@@ -836,7 +831,7 @@ func (api *TraceAPIImpl) ReplayTransaction(ctx context.Context, txHash libcommon
 		if api.useBridgeReader {
 			blockNum, ok, err = api.bridgeReader.EventTxnLookup(ctx, txHash)
 			if ok {
-				txNumNextBlock, err := txNumsReader.Min(tx, blockNum+1)
+				txNumNextBlock, err := api._txNumReader.Min(tx, blockNum+1)
 				if err != nil {
 					return nil, err
 				}
@@ -861,7 +856,7 @@ func (api *TraceAPIImpl) ReplayTransaction(ctx context.Context, txHash libcommon
 		return nil, err
 	}
 
-	txNumMin, err := txNumsReader.Min(tx, blockNum)
+	txNumMin, err := api._txNumReader.Min(tx, blockNum)
 	if err != nil {
 		return nil, err
 	}
