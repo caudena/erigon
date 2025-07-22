@@ -615,6 +615,15 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 				EventFetcher: heimdallClient,
 			})
 
+			if err := heimdallStore.Milestones().Prepare(ctx); err != nil {
+				return nil, err
+			}
+
+			_, err := heimdallStore.Milestones().DeleteFromBlockNum(ctx, 0)
+			if err != nil {
+				return nil, err
+			}
+
 			heimdallService = heimdall.NewService(heimdall.ServiceConfig{
 				Store:     heimdallStore,
 				BorConfig: borConfig,
@@ -632,7 +641,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		flags.Milestone = config.WithHeimdallMilestones
 	}
 
-	backend.engine = ethconsensusconfig.CreateConsensusEngine(ctx, stack.Config(), chainConfig, consensusConfig, config.Miner.Notify, config.Miner.Noverify, heimdallClient, config.WithoutHeimdall, blockReader, false /* readonly */, logger, polygonBridge, heimdallService)
+	backend.engine = ethconsensusconfig.CreateConsensusEngine(ctx, stack.Config(), chainConfig, consensusConfig, config.Miner.Notify, config.Miner.Noverify, heimdallClient, config.WithoutHeimdall, blockReader, false /* readonly */, logger, polygonBridge, heimdallService, heimdallService)
 
 	inMemoryExecution := func(txc wrap.TxContainer, header *types.Header, body *types.RawBody, unwindPoint uint64, headersChain []*types.Header, bodiesChain []*types.RawBody,
 		notifications *shards.Notifications) error {
