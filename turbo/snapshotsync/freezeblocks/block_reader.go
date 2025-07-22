@@ -24,6 +24,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hashicorp/golang-lru/v2"
+
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/dbg"
 	"github.com/erigontech/erigon-lib/downloader/snaptype"
@@ -400,12 +402,18 @@ type BlockReader struct {
 	borBridgeStore bridge.Store
 	heimdallStore  heimdall.Store
 	txBlockIndex   *txBlockIndexWithBlockReader
+
+	//files are immutable: no reorgs, on updates - means no invalidation needed
+	headerByNumCache *lru.Cache[uint64, *types.Header]
 }
+
+var headerByNumCacheSize = dbg.EnvInt("RPC_HEADER_BY_NUM_LRU", 1_000)
 
 func NewBlockReader(snapshots snapshotsync.BlockSnapshots, borSnapshots snapshotsync.BlockSnapshots, heimdallStore heimdall.Store, borBridge bridge.Store) *BlockReader {
 	borSn, _ := borSnapshots.(*heimdall.RoSnapshots)
 	sn, _ := snapshots.(*RoSnapshots)
 	br := &BlockReader{sn: sn, borSn: borSn, heimdallStore: heimdallStore, borBridgeStore: borBridge}
+	br.headerByNumCache, _ = lru.New[uint64, *types.Header](headerByNumCacheSize)
 	txnumReader := TxBlockIndexFromBlockReader(context.Background(), br).(*txBlockIndexWithBlockReader)
 	br.txBlockIndex = txnumReader
 	return br
@@ -918,6 +926,10 @@ func (r *BlockReader) blockWithSenders(ctx context.Context, tx kv.Getter, hash c
 }
 
 func (r *BlockReader) headerFromSnapshot(blockHeight uint64, sn *snapshotsync.VisibleSegment, buf []byte) (*types.Header, []byte, error) {
+	if h, ok := r.headerByNumCache.Get(blockHeight); ok {
+		return h, buf, nil
+	}
+
 	index := sn.Src().Index()
 	if index == nil {
 		return nil, buf, nil
@@ -936,6 +948,8 @@ func (r *BlockReader) headerFromSnapshot(blockHeight uint64, sn *snapshotsync.Vi
 	if err := rlp.DecodeBytes(buf[1:], h); err != nil {
 		return nil, buf, err
 	}
+
+	r.headerByNumCache.Add(blockHeight, h)
 	return h, buf, nil
 }
 
@@ -1013,6 +1027,32 @@ func (r *BlockReader) bodyForStorageFromSnapshot(blockHeight uint64, sn *snapsho
 	}() // avoid crash because Erigon's core does many things
 
 	return BodyForStorageFromSnapshot(blockHeight, sn, buf)
+}
+
+func BodyForTxnFromSnapshot(blockHeight uint64, sn *snapshotsync.VisibleSegment, buf []byte) (*types.BodyOnlyTxn, []byte, error) {
+	index := sn.Src().Index()
+
+	if index == nil {
+		return nil, buf, nil
+	}
+
+	bodyOffset := index.OrdinalLookup(blockHeight - index.BaseDataID())
+
+	gg := sn.Src().MakeGetter()
+	gg.Reset(bodyOffset)
+	if !gg.HasNext() {
+		return nil, buf, nil
+	}
+	buf, _ = gg.Next(buf[:0])
+	if len(buf) == 0 {
+		return nil, buf, nil
+	}
+	b := &types.BodyOnlyTxn{}
+	if err := rlp.DecodeBytesPartial(buf, b); err != nil {
+		return nil, buf, err
+	}
+
+	return b, buf, nil
 }
 
 func BodyForStorageFromSnapshot(blockHeight uint64, sn *snapshotsync.VisibleSegment, buf []byte) (*types.BodyForStorage, []byte, error) {
@@ -1179,8 +1219,8 @@ func (r *BlockReader) TxnByIdxInBlock(ctx context.Context, tx kv.Getter, blockNu
 	}
 	defer release()
 
-	var b *types.BodyForStorage
-	b, _, err = r.bodyForStorageFromSnapshot(blockNum, seg, nil)
+	var b *types.BodyOnlyTxn
+	b, _, err = BodyForTxnFromSnapshot(blockNum, seg, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1272,7 +1312,7 @@ func (r *BlockReader) IntegrityTxnID(failFast bool) error {
 		}
 		firstBlockNum := snb.Src().Index().BaseDataID()
 		sn, _ := view.TxsSegment(firstBlockNum)
-		b, _, err := r.bodyForStorageFromSnapshot(firstBlockNum, snb, nil)
+		b, _, err := BodyForTxnFromSnapshot(firstBlockNum, snb, nil)
 		if err != nil {
 			return err
 		}
@@ -1616,13 +1656,13 @@ func (t *txBlockIndexWithBlockReader) MaxTxNum(tx kv.Tx, c kv.Cursor, blockNum u
 
 func (t *txBlockIndexWithBlockReader) BlockNumber(tx kv.Tx, txNum uint64) (blockNum uint64, ok bool, err error) {
 	var buf []byte
-	var b *types.BodyForStorage
+	var b *types.BodyOnlyTxn
 	view := t.r.Snapshots().(*RoSnapshots).View()
 	defer view.Close()
 
 	getMaxTxNum := func(seg *snapshotsync.VisibleSegment) GetMaxTxNum {
 		return func(i uint64) (uint64, error) {
-			b, buf, err = BodyForStorageFromSnapshot(i, seg, buf)
+			b, buf, err = BodyForTxnFromSnapshot(i, seg, buf)
 			if err != nil {
 				return 0, err
 			}

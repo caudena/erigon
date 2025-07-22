@@ -34,7 +34,6 @@ import (
 	"github.com/erigontech/erigon/polygon/bor/finality/whitelist"
 	"github.com/erigontech/erigon/rpc"
 	"github.com/erigontech/erigon/turbo/services"
-	"github.com/erigontech/erigon/turbo/snapshotsync/freezeblocks"
 )
 
 // unable to decode supplied params, or an invalid number of parameters
@@ -148,7 +147,7 @@ func CreateStateReader(ctx context.Context, tx kv.TemporalTx, br services.FullBl
 	if err != nil {
 		return nil, err
 	}
-	return CreateStateReaderFromBlockNumber(ctx, tx, rawdbv3.TxNums.WithCustomReadTxNumFunc(freezeblocks.TxBlockIndexFromBlockReader(ctx, br)), blockNumber, latest, txnIndex, stateCache, chainName)
+	return CreateStateReaderFromBlockNumber(ctx, tx, br.TxnumReader(ctx), blockNumber, latest, txnIndex, stateCache, chainName)
 }
 
 func CreateStateReaderFromBlockNumber(ctx context.Context, tx kv.TemporalTx, txNumsReader rawdbv3.TxNumsReader, blockNumber uint64, latest bool, txnIndex int, stateCache kvcache.Cache, chainName string) (state.StateReader, error) {
@@ -171,12 +170,12 @@ func CreateHistoryStateReader(tx kv.TemporalTx, txNumsReader rawdbv3.TxNumsReade
 		return nil, err
 	}
 	txNum := uint64(int(minTxNum) + txnIndex + /* 1 system txNum in beginning of block */ 1)
-	earliestTxNum := r.StateHistoryStartFrom()
-	if txNum < earliestTxNum {
-		// data available only starting from earliestTxNum, throw error to avoid unintended
-		// consequences of using this StateReader
-		return r, state.PrunedError
-	}
+	//earliestTxNum := r.StateHistoryStartFrom()
+	//if txNum < earliestTxNum {
+	// data available only starting from earliestTxNum, throw error to avoid unintended
+	// consequences of using this StateReader
+	//	return r, state.PrunedError
+	//}
 	r.SetTxNum(txNum)
 	return r, nil
 }
