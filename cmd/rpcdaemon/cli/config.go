@@ -437,12 +437,10 @@ func RemoteServices(ctx context.Context, cfg *httpcfg.HttpCfg, logger log.Logger
 		// Configure sapshots
 
 		cfg.Snap.ChainName = cc.ChainName
-		// this assumed the rpc deamon never runs with a downloader - if this is
-		// not the case we'll need to adjust the defaults of the --no-downlaoder
-		// flag to the faulse by default
-		cfg.Snap.NoDownloader = true
 		allSnapshots = freezeblocks.NewRoSnapshots(cfg.Snap, cfg.Dirs.Snap, 0, logger)
 		allBorSnapshots = heimdall.NewRoSnapshots(cfg.Snap, cfg.Dirs.Snap, 0, logger)
+		allSnapshots.DownloadComplete()
+		allBorSnapshots.DownloadComplete()
 
 		if polygonSync {
 			heimdallStore = heimdall.NewSnapshotStore(heimdall.NewMdbxStore(logger, cfg.Dirs.DataDir, true, roTxLimit), allBorSnapshots)
@@ -486,17 +484,13 @@ func RemoteServices(ctx context.Context, cfg *httpcfg.HttpCfg, logger log.Logger
 		onNewSnapshot = func() {
 			wg.Go(func() error { // don't block events processing by network communication
 				logger.Info("on new snapshots triggered...")
-				reply, err := remoteKvClient.Snapshots(ctx, &remote.SnapshotsRequest{}, grpc.WaitForReady(true))
-				if err != nil {
-					logger.Warn("[snapshots] reopen", "err", err)
-					return nil
-				}
-				if err := allSnapshots.OpenList(reply.BlocksFiles, true); err != nil {
+				if err := allSnapshots.OpenFolder(); err != nil {
 					logger.Error("[snapshots] reopen", "err", err)
 				} else {
 					allSnapshots.LogStat("reopen")
 				}
-				if err := allBorSnapshots.OpenList(reply.BlocksFiles, true); err != nil {
+
+				if err := allBorSnapshots.OpenFolder(); err != nil {
 					logger.Error("[bor snapshots] reopen", "err", err)
 				} else {
 					allBorSnapshots.LogStat("bor:reopen")

@@ -232,6 +232,10 @@ func CalcProducerDelay(number uint64, succession int, c *borcfg.BorConfig) uint6
 	// When the block is the first block of the sprint, it is expected to be delayed by `producerDelay`.
 	// That is to allow time for block propagation in the last sprint
 	delay := c.CalculatePeriod(number)
+	// Since there is only one producer in Rio/VeBlop, we don't need to add producer delay and backup multiplier
+	if c.IsRio(number) {
+		return delay
+	}
 	if c.IsSprintStart(number) {
 		delay = c.CalculateProducerDelay(number)
 	}
@@ -328,10 +332,6 @@ func BorRLP(header *types.Header, c *borcfg.BorConfig) []byte {
 	return b.Bytes()
 }
 
-type MissedSpanHandler interface {
-	HandleMissedSpan(ctx context.Context, spanID uint64) error
-}
-
 // Bor is the matic-bor consensus engine
 type Bor struct {
 	chainConfig *chain.Config     // Chain config
@@ -351,7 +351,6 @@ type Bor struct {
 	HeimdallClient  heimdall.Client
 	useSpanReader   bool
 	spanReader      spanReader
-	spanScraper     MissedSpanHandler
 	useBridgeReader bool
 	bridgeReader    bridgeReader
 
@@ -383,7 +382,6 @@ func New(
 	logger log.Logger,
 	bridgeReader bridgeReader,
 	spanReader spanReader,
-	spanScraper MissedSpanHandler,
 ) *Bor {
 	// get bor config
 	borConfig := chainConfig.Bor.(*borcfg.BorConfig)
@@ -414,7 +412,6 @@ func New(
 		bridgeReader:    bridgeReader,
 		useSpanReader:   spanReader != nil && !reflect.ValueOf(spanReader).IsNil(), // needed for interface nil caveat
 		spanReader:      spanReader,
-		spanScraper:     spanScraper,
 	}
 
 	c.authorizedSigner.Store(&signer{
@@ -1099,11 +1096,14 @@ func (c *Bor) Finalize(config *chain.Config, header *types.Header, state *state.
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
 		if c.blockReader != nil {
-			// check and commit span
-			if err := c.checkAndCommitSpan(state, header, cx, syscall); err != nil {
-				err := fmt.Errorf("Finalize.checkAndCommitSpan: %w", err)
-				c.logger.Error("[bor] committing span", "err", err)
-				return nil, types.Receipts{}, nil, err
+			// post VeBlop spans won't be committed to smart contract
+			if !c.config.IsRio(header.Number.Uint64()) {
+				// check and commit span
+				if err := c.checkAndCommitSpan(state, header, cx, syscall); err != nil {
+					err := fmt.Errorf("Finalize.checkAndCommitSpan: %w", err)
+					c.logger.Error("[bor] committing span", "err", err)
+					return nil, types.Receipts{}, nil, err
+				}
 			}
 
 			// commit states
@@ -1166,11 +1166,14 @@ func (c *Bor) FinalizeAndAssemble(chainConfig *chain.Config, header *types.Heade
 		cx := statefull.ChainContext{Chain: chain, Bor: c}
 
 		if c.blockReader != nil {
-			// check and commit span
-			if err := c.checkAndCommitSpan(state, header, cx, syscall); err != nil {
-				err := fmt.Errorf("FinalizeAndAssemble.checkAndCommitSpan: %w", err)
-				c.logger.Error("[bor] committing span", "err", err)
-				return nil, nil, types.Receipts{}, nil, err
+			// Post Rio/VeBlop spans won't be committed to smart contract
+			if !c.config.IsRio(header.Number.Uint64()) {
+				// check and commit span
+				if err := c.checkAndCommitSpan(state, header, cx, syscall); err != nil {
+					err := fmt.Errorf("FinalizeAndAssemble.checkAndCommitSpan: %w", err)
+					c.logger.Error("[bor] committing span", "err", err)
+					return nil, nil, types.Receipts{}, nil, err
+				}
 			}
 			// commit states
 			if err := c.CommitStates(state, header, cx, syscall, logger, true); err != nil {
@@ -1517,18 +1520,7 @@ func (c *Bor) fetchAndCommitSpan(
 			return err
 		}
 		if !ok {
-			// This could be an exception caused by Heimdall V2 migration. Needs to be handled in the following way:
-			if err = c.spanScraper.HandleMissedSpan(context.Background(), newSpanID); err != nil {
-				return err
-			}
-
-			span, ok, err = c.spanReader.Span(context.Background(), newSpanID)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return errors.New(fmt.Sprintf("error fetching span %v", newSpanID))
-			}
+			return errors.New(fmt.Sprintf("error fetching span %v", newSpanID))
 		}
 
 		heimdallSpan = span

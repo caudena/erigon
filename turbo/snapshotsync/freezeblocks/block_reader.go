@@ -24,7 +24,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/hashicorp/golang-lru/v2"
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/dbg"
@@ -130,7 +130,7 @@ func (r *RemoteBlockReader) Snapshots() snapshotsync.BlockSnapshots    { panic("
 func (r *RemoteBlockReader) BorSnapshots() snapshotsync.BlockSnapshots { panic("not implemented") }
 func (r *RemoteBlockReader) AllTypes() []snaptype.Type                 { panic("not implemented") }
 func (r *RemoteBlockReader) FrozenBlocks() uint64                      { panic("not supported") }
-func (r *RemoteBlockReader) FrozenBorBlocks() uint64                   { panic("not supported") }
+func (r *RemoteBlockReader) FrozenBorBlocks(align bool) uint64         { panic("not supported") }
 func (r *RemoteBlockReader) FrozenFiles() (list []string)              { panic("not supported") }
 func (r *RemoteBlockReader) FreezingCfg() ethconfig.BlocksFreezing     { panic("not supported") }
 
@@ -353,7 +353,7 @@ func (r *RemoteBlockReader) LastSpanId(_ context.Context, _ kv.Tx) (uint64, bool
 	panic("not implemented")
 }
 
-func (r *RemoteBlockReader) LastFrozenSpanId() uint64 {
+func (r *RemoteBlockReader) LastFrozenSpanId() (uint64, bool, error) {
 	panic("not implemented")
 }
 
@@ -466,11 +466,27 @@ func (r *BlockReader) AllTypes() []snaptype.Type {
 }
 
 func (r *BlockReader) FrozenBlocks() uint64 { return r.sn.BlocksAvailable() }
-func (r *BlockReader) FrozenBorBlocks() uint64 {
-	if r.borSn != nil {
-		return r.borSn.BlocksAvailable()
+func (r *BlockReader) FrozenBorBlocks(align bool) uint64 {
+	if r.borSn == nil {
+		return 0
 	}
-	return 0
+
+	frozen := r.borSn.BlocksAvailable()
+
+	if !align {
+		return frozen
+	}
+
+	for _, t := range r.borSn.Types() {
+
+		available := r.borSn.VisibleBlocksAvailable(t.Enum())
+
+		if available < frozen {
+			frozen = available
+		}
+	}
+
+	return frozen
 }
 func (r *BlockReader) FrozenFiles() []string {
 	files := r.sn.Files()
@@ -1301,7 +1317,7 @@ func (r *BlockReader) IterateFrozenBodies(f func(blockNum, baseTxNum, txCount ui
 }
 
 func (r *BlockReader) IntegrityTxnID(failFast bool) error {
-	defer log.Info("[integrity] IntegrityTxnID done")
+	defer log.Info("[integrity] BlocksTxnID done")
 	view := r.sn.View()
 	defer view.Close()
 
@@ -1317,7 +1333,7 @@ func (r *BlockReader) IntegrityTxnID(failFast bool) error {
 			return err
 		}
 		if b.BaseTxnID.U64() != expectedFirstTxnID {
-			err := fmt.Errorf("[integrity] IntegrityTxnID: bn=%d, baseID=%d, cnt=%d, expectedFirstTxnID=%d", firstBlockNum, b.BaseTxnID, sn.Src().Count(), expectedFirstTxnID)
+			err := fmt.Errorf("[integrity] BlocksTxnID: bn=%d, baseID=%d, cnt=%d, expectedFirstTxnID=%d", firstBlockNum, b.BaseTxnID, sn.Src().Count(), expectedFirstTxnID)
 			if failFast {
 				return err
 			} else {
@@ -1488,9 +1504,9 @@ func (r *BlockReader) LastFrozenEventBlockNum() uint64 {
 	return r.borBridgeStore.LastFrozenEventBlockNum()
 }
 
-func (r *BlockReader) LastFrozenSpanId() uint64 {
+func (r *BlockReader) LastFrozenSpanId() (uint64, bool, error) {
 	if r.heimdallStore == nil {
-		return 0
+		return 0, false, nil
 	}
 
 	return r.heimdallStore.Spans().LastFrozenEntityId()
@@ -1565,9 +1581,9 @@ func (r *BlockReader) Checkpoint(ctx context.Context, tx kv.Tx, checkpointId uin
 	}).WithTx(tx).Entity(ctx, checkpointId)
 }
 
-func (r *BlockReader) LastFrozenCheckpointId() uint64 {
+func (r *BlockReader) LastFrozenCheckpointId() (uint64, bool, error) {
 	if r.heimdallStore == nil {
-		return 0
+		return 0, false, nil
 	}
 
 	return r.heimdallStore.Checkpoints().LastFrozenEntityId()

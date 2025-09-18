@@ -41,6 +41,7 @@ import (
 	libcommon "github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/common/datadir"
 	"github.com/erigontech/erigon-lib/common/dbg"
+	"github.com/erigontech/erigon-lib/common/dir"
 	"github.com/erigontech/erigon-lib/config3"
 	"github.com/erigontech/erigon-lib/downloader"
 	"github.com/erigontech/erigon-lib/kv"
@@ -429,15 +430,43 @@ var cmdRunMigrations = &cobra.Command{
 	Short: "",
 	Run: func(cmd *cobra.Command, args []string) {
 		logger := debug.SetupCobra(cmd, "integration")
-		//non-accede and exclusive mode - to apply create new tables if need.
-		cfg := dbCfg(kv.ChainDB, chaindata).RemoveFlags(mdbx.Accede).Exclusive(true)
-		db, err := openDB(cfg, true, logger)
-		if err != nil {
-			logger.Error("Opening DB", "error", err)
-			return
+		migrateDB := func(label kv.Label, path string) {
+			logger.Info("Opening DB", "label", label, "path", path)
+			// Non-accede and exclusive mode - to apply creation of new tables if needed.
+			cfg := dbCfg(label, path).RemoveFlags(mdbx.Accede).Exclusive(true)
+			db, err := openDB(cfg, true, logger)
+			if err != nil {
+				logger.Error("Opening DB", "error", err)
+				return
+			}
+			defer db.Close()
+			// Nothing to do, migrations will be applied automatically
 		}
-		defer db.Close()
-		// Nothing to do, migrations will be applied automatically
+
+		// Chaindata DB *must* be the first one because guaranteed to contain data in Config table
+		// (see openSnapshotOnce in allSnapshots below).
+		migrateDB(kv.ChainDB, chaindata)
+
+		// Migrations must be applied also to the consensus DB because ConsensusTables contain also ChaindataTables
+		// (see kv/tables.go).
+		consensus := strings.Replace(chaindata, "chaindata", "aura", 1)
+		if exists, err := dir.Exist(consensus); err == nil && exists {
+			migrateDB(kv.ConsensusDB, consensus)
+		} else {
+			consensus = strings.Replace(chaindata, "chaindata", "clique", 1)
+			if exists, err := dir.Exist(consensus); err == nil && exists {
+				migrateDB(kv.ConsensusDB, consensus)
+			}
+		}
+		// Migrations must be applied also to the Bor heimdall and polygon-bridge DBs.
+		heimdall := strings.Replace(chaindata, "chaindata", "heimdall", 1)
+		if exists, err := dir.Exist(heimdall); err == nil && exists {
+			migrateDB(kv.HeimdallDB, heimdall)
+		}
+		polygonBridge := strings.Replace(chaindata, "chaindata", "polygon-bridge", 1)
+		if exists, err := dir.Exist(polygonBridge); err == nil && exists {
+			migrateDB(kv.PolygonBridgeDB, polygonBridge)
+		}
 	},
 }
 
@@ -1379,6 +1408,7 @@ func newSync(ctx context.Context, db kv.TemporalRwDB, miningConfig *params.Minin
 		false,
 		maxBlockBroadcastPeers,
 		false, /* disableBlockDownload */
+		false, /* enableWitProtocol */
 		logger,
 	)
 	if err != nil {
@@ -1488,7 +1518,7 @@ func initConsensusEngine(ctx context.Context, cc *chain2.Config, dir string, db 
 		consensusConfig = &config.Ethash
 	}
 	return ethconsensusconfig.CreateConsensusEngine(ctx, &nodecfg.Config{Dirs: datadir.New(dir)}, cc, consensusConfig, config.Miner.Notify, config.Miner.Noverify,
-		heimdallClient, config.WithoutHeimdall, blockReader, db.ReadOnly(), logger, nil, nil, nil), heimdallClient
+		heimdallClient, config.WithoutHeimdall, blockReader, db.ReadOnly(), logger, nil, nil), heimdallClient
 }
 
 func readGenesis(chain string) *types.Genesis {

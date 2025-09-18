@@ -521,6 +521,8 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 			}
 
 			cfg.ListenAddr = fmt.Sprintf("%s:%d", listenHost, listenPort)
+
+			// TODO: Auto-enable WIT protocol for Bor chains if not explicitly set
 			server := sentry.NewGrpcServer(backend.sentryCtx, nil, readNodeInfo, &cfg, protocol, logger)
 			backend.sentryServers = append(backend.sentryServers, server)
 			sentries = append(sentries, direct.NewSentryClientDirect(protocol, server))
@@ -597,12 +599,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 
 	if chainConfig.Bor != nil {
 		if !config.WithoutHeimdall {
-			heimdallClient = heimdall.NewHttpClient(
-				config.HeimdallURL,
-				logger,
-				heimdall.WithApiVersioner(ctx),
-				heimdall.WithHttpMaxRetries(heimdall.MaxRetriesUnlimited), // HeimdallV2 causes downtime, which can last up to 10-30 mins. It needs to be removed after HeimdallV2 upgrade
-			)
+			heimdallClient = heimdall.NewHttpClient(config.HeimdallURL, logger, heimdall.WithApiVersioner(ctx))
 		}
 
 		if config.PolygonSync {
@@ -625,10 +622,11 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 			}
 
 			heimdallService = heimdall.NewService(heimdall.ServiceConfig{
-				Store:     heimdallStore,
-				BorConfig: borConfig,
-				Client:    heimdallClient,
-				Logger:    logger,
+				Store:       heimdallStore,
+				ChainConfig: chainConfig,
+				BorConfig:   borConfig,
+				Client:      heimdallClient,
+				Logger:      logger,
 			})
 
 			bridgeRPC = bridge.NewBackendServer(ctx, polygonBridge)
@@ -641,7 +639,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		flags.Milestone = config.WithHeimdallMilestones
 	}
 
-	backend.engine = ethconsensusconfig.CreateConsensusEngine(ctx, stack.Config(), chainConfig, consensusConfig, config.Miner.Notify, config.Miner.Noverify, heimdallClient, config.WithoutHeimdall, blockReader, false /* readonly */, logger, polygonBridge, heimdallService, heimdallService)
+	backend.engine = ethconsensusconfig.CreateConsensusEngine(ctx, stack.Config(), chainConfig, consensusConfig, config.Miner.Notify, config.Miner.Noverify, heimdallClient, config.WithoutHeimdall, blockReader, false /* readonly */, logger, polygonBridge, heimdallService)
 
 	inMemoryExecution := func(txc wrap.TxContainer, header *types.Header, body *types.RawBody, unwindPoint uint64, headersChain []*types.Header, bodiesChain []*types.RawBody,
 		notifications *shards.Notifications) error {
@@ -709,6 +707,7 @@ func New(ctx context.Context, stack *node.Node, config *ethconfig.Config, logger
 		stack.Config().SentryLogPeerInfo,
 		maxBlockBroadcastPeers,
 		sentryMcDisableBlockDownload,
+		stack.Config().P2P.EnableWitProtocol,
 		logger,
 	)
 	if err != nil {
@@ -1825,7 +1824,7 @@ func (s *Ethereum) ExecutionModule() *eth1.EthereumExecutionModule {
 	return s.eth1ExecutionServer
 }
 
-// RemoveContents is like os.RemoveAll, but preserve dir itself
+// RemoveContents is like dir.RemoveAll, but preserve dir itself
 func RemoveContents(dirname string) error {
 	d, err := os.Open(dirname)
 	if err != nil {
@@ -1842,7 +1841,7 @@ func RemoveContents(dirname string) error {
 		return err
 	}
 	for _, file := range files {
-		err = os.RemoveAll(filepath.Join(dirname, file.Name()))
+		err = dir.RemoveAll(filepath.Join(dirname, file.Name()))
 		if err != nil {
 			return err
 		}

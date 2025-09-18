@@ -136,10 +136,53 @@ func TestGetBurntContract(t *testing.T) {
 	require.NotNil(t, addr)
 	assert.Equal(t, common.HexToAddress("0x7A8ed27F4C30512326878652d20fC85727401854"), *addr)
 
+	// Mumbai
+	addr = MumbaiChainConfig.GetBurntContract(22640000)
+	require.NotNil(t, addr)
+	assert.Equal(t, common.HexToAddress("0x70bcA57F4579f58670aB2d18Ef16e02C17553C38"), *addr)
+	addr = MumbaiChainConfig.GetBurntContract(22640000 + 1)
+	require.NotNil(t, addr)
+	assert.Equal(t, common.HexToAddress("0x70bcA57F4579f58670aB2d18Ef16e02C17553C38"), *addr)
+	addr = MumbaiChainConfig.GetBurntContract(41874000 - 1)
+	require.NotNil(t, addr)
+	assert.Equal(t, common.HexToAddress("0x70bcA57F4579f58670aB2d18Ef16e02C17553C38"), *addr)
+	addr = MumbaiChainConfig.GetBurntContract(41874000)
+	require.NotNil(t, addr)
+	assert.Equal(t, common.HexToAddress("0x617b94CCCC2511808A3C9478ebb96f455CF167aA"), *addr)
+	addr = MumbaiChainConfig.GetBurntContract(41874000 + 1)
+	require.NotNil(t, addr)
+	assert.Equal(t, common.HexToAddress("0x617b94CCCC2511808A3C9478ebb96f455CF167aA"), *addr)
+
 	// Amoy
 	addr = AmoyChainConfig.GetBurntContract(0)
 	require.NotNil(t, addr)
 	assert.Equal(t, common.HexToAddress("0x000000000000000000000000000000000000dead"), *addr)
+}
+
+func TestCalculateCoinbaseAmoy(t *testing.T) {
+	config := AmoyChainConfig
+
+	addr0 := common.Address{}
+	expectedCoinbaseAddr := common.HexToAddress("0x7Ee41D8A25641000661B1EF5E6AE8A00400466B0")
+	var testCases = []struct {
+		blockNumber uint64
+		expected    common.Address
+		description string
+	}{
+		{0, addr0, "at genesis block"},
+		{10_000, addr0, "before transition"},
+		{26272255, addr0, "just before transition"},
+		{26272256, expectedCoinbaseAddr, "at transition"},
+		{30000000, expectedCoinbaseAddr, "after transition"},
+	}
+	for _, tc := range testCases {
+		result := config.Bor.CalculateCoinbase(tc.blockNumber)
+		if result != tc.expected {
+			t.Errorf("Block %d (%s): expected %s, got %s",
+				tc.blockNumber, tc.description, tc.expected, result)
+		}
+	}
+
 }
 
 func TestMainnetBlobSchedule(t *testing.T) {
