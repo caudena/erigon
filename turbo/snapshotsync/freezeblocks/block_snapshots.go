@@ -23,7 +23,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -370,7 +369,7 @@ func (br *BlockRetire) PruneAncientBlocks(tx kv.RwTx, limit int, timeout time.Du
 			continue
 		}
 
-		frozenBlocks := br.blockReader.FrozenBorBlocks()
+		frozenBlocks := br.blockReader.FrozenBorBlocks(true)
 
 		if canDeleteTo := CanDeleteTo(currentProgress, frozenBlocks); canDeleteTo > 0 {
 			// PruneBorBlocks - [1, to) old blocks after moving it to snapshots.
@@ -468,7 +467,7 @@ func (br *BlockRetire) RetireBlocks(ctx context.Context, requestedMinBlockNum ui
 		}
 
 		if includeBor {
-			minBorBlockNum := max(br.blockReader.FrozenBorBlocks(), requestedMinBlockNum)
+			minBorBlockNum := max(br.blockReader.FrozenBorBlocks(true), requestedMinBlockNum)
 			okBor, err = br.retireBorBlocks(ctx, minBorBlockNum, maxBlockNum, lvl, seedNewSnapshots, onDeleteSnapshots)
 			if err != nil {
 				return err
@@ -1072,12 +1071,12 @@ func RemoveIncompatibleIndices(dirs datadir.Dirs) error {
 		if err != nil {
 			if errors.Is(err, recsplit.IncompatibleErr) {
 				_, fName := filepath.Split(fPath)
-				if err = os.Remove(fPath); err != nil {
+				if err = dir2.RemoveFile(fPath); err != nil {
 					log.Warn("Removing incompatible index", "file", fName, "err", err)
 				} else {
 					log.Info("Removing incompatible index", "file", fName)
 				}
-				if err = os.Remove(fPath + ".torrent"); err != nil {
+				if err = dir2.RemoveFile(fPath + ".torrent"); err != nil {
 					log.Warn("Removing incompatible index", "file", fName, "err", err)
 				} else {
 					log.Info("Removing incompatible index", "file", fName)

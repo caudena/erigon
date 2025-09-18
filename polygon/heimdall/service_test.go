@@ -164,10 +164,11 @@ func (suite *ServiceTestSuite) SetupSuite() {
 	suite.setupCheckpoints()
 	suite.setupMilestones()
 	suite.service = NewService(ServiceConfig{
-		Store:     store,
-		BorConfig: borConfig,
-		Client:    suite.client,
-		Logger:    logger,
+		Store:       store,
+		ChainConfig: suite.chainConfig,
+		BorConfig:   borConfig,
+		Client:      suite.client,
+		Logger:      logger,
 	})
 
 	err := suite.service.store.Prepare(suite.ctx)
@@ -182,7 +183,10 @@ func (suite *ServiceTestSuite) SetupSuite() {
 	})
 
 	suite.eg.Go(func() error {
-		return suite.service.Run(suite.ctx)
+		defer suite.cancel()
+		err := suite.service.Run(suite.ctx)
+		require.ErrorIs(suite.T(), err, context.Canceled)
+		return err
 	})
 
 	lastMilestone, ok, err := suite.service.SynchronizeMilestones(suite.ctx)

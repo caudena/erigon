@@ -67,10 +67,6 @@ func newTestHeimdall(chainConfig *chain.Config) *test_heimdall {
 	}
 }
 
-func (h *test_heimdall) IsOnline(ctx context.Context) (bool, error) {
-	return true, nil
-}
-
 func (h *test_heimdall) BorConfig() *borcfg.BorConfig {
 	return h.borConfig
 }
@@ -188,8 +184,8 @@ func (r headerReader) Config() *chain.Config {
 	return r.validator.ChainConfig
 }
 
-func (r headerReader) FrozenBlocks() uint64    { return 0 }
-func (r headerReader) FrozenBorBlocks() uint64 { return 0 }
+func (r headerReader) FrozenBlocks() uint64              { return 0 }
+func (r headerReader) FrozenBorBlocks(align bool) uint64 { return 0 }
 
 func (r headerReader) CurrentHeader() *types.Header {
 	return nil
@@ -330,7 +326,6 @@ func newValidator(t *testing.T, heimdall *test_heimdall, blocks map[uint64]*type
 		heimdall,
 		stateReceiver,
 		logger,
-		nil,
 		nil,
 		nil,
 	)

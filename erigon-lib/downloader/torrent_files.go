@@ -63,7 +63,7 @@ func (tf *AtomicTorrentFS) delete(name string) error {
 	if !strings.HasSuffix(name, ".torrent") {
 		name += ".torrent"
 	}
-	return os.Remove(filepath.Join(tf.dir, name))
+	return dir.RemoveFile(filepath.Join(tf.dir, name))
 }
 
 func (tf *AtomicTorrentFS) Create(name string, res []byte) (ts *torrent.TorrentSpec, created bool, err error) {
@@ -186,6 +186,30 @@ func (tf *AtomicTorrentFS) load(fPath string) (*torrent.TorrentSpec, error) {
 		return nil, fmt.Errorf("LoadFromFile: %w, file=%s", err, fPath)
 	}
 	mi.AnnounceList = Trackers
+	return torrent.TorrentSpecFromMetaInfoErr(mi)
+}
+
+func (tf *AtomicTorrentFS) LoadRelease(fPath string) (*torrent.TorrentSpec, error) {
+	tf.lock.Lock()
+	defer tf.lock.Unlock()
+	if !strings.HasSuffix(fPath, ".torrent") {
+		fPath += ".torrent"
+	}
+	mi, err := metainfo.LoadFromFile(fPath)
+	if err != nil {
+		return nil, fmt.Errorf("LoadFromFile: %w, file=%s", err, fPath)
+	}
+	mi.AnnounceList = Trackers
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return nil, fmt.Errorf("LoadFromFile: %w, file=%s", err, fPath)
+	}
+	if strings.Contains(info.Name, "v1-") {
+		info.Name = strings.Replace(info.Name, "v1-", "v1.0-", 1)
+		mi6, _ := CreateMetaInfo(&info, nil)
+		return torrent.TorrentSpecFromMetaInfoErr(mi6)
+	}
+
 	return torrent.TorrentSpecFromMetaInfoErr(mi)
 }
 

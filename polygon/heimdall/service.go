@@ -25,6 +25,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/erigontech/erigon-lib/chain"
 	libcommon "github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon-lib/event"
 	"github.com/erigontech/erigon-lib/log/v3"
@@ -37,10 +38,11 @@ const (
 )
 
 type ServiceConfig struct {
-	Store     Store
-	BorConfig *borcfg.BorConfig
-	Client    Client
-	Logger    log.Logger
+	Store       Store
+	ChainConfig *chain.Config
+	BorConfig   *borcfg.BorConfig
+	Client      Client
+	Logger      log.Logger
 }
 
 type Service struct {
@@ -57,6 +59,7 @@ type Service struct {
 
 func NewService(config ServiceConfig) *Service {
 	logger := config.Logger
+	chainConfig := config.ChainConfig
 	borConfig := config.BorConfig
 	store := config.Store
 	client := config.Client
@@ -92,7 +95,7 @@ func NewService(config ServiceConfig) *Service {
 		"spans",
 		store.Spans(),
 		spanFetcher,
-		1*time.Second,
+		200*time.Millisecond,
 		TransientErrors,
 		logger,
 	)
@@ -100,11 +103,11 @@ func NewService(config ServiceConfig) *Service {
 	return &Service{
 		logger:                    logger,
 		store:                     store,
-		reader:                    NewReader(borConfig, store, logger),
+		reader:                    NewReader(chainConfig, borConfig, store, logger),
 		checkpointScraper:         checkpointScraper,
 		milestoneScraper:          milestoneScraper,
 		spanScraper:               spanScraper,
-		spanBlockProducersTracker: newSpanBlockProducersTracker(logger, borConfig, store.SpanBlockProducerSelections()),
+		spanBlockProducersTracker: newSpanBlockProducersTracker(logger, chainConfig, borConfig, store.SpanBlockProducerSelections()),
 		client:                    client,
 	}
 }
@@ -164,40 +167,6 @@ func NewSpanFetcher(client Client, logger log.Logger) *EntityFetcher[*Span] {
 	)
 }
 
-func (s *Service) HandleMissedSpan(ctx context.Context, spanID uint64) error {
-	s.logger.Warn("HandleMissedSpan: ", spanID)
-
-	isOnline, err := s.client.IsOnline(ctx)
-	if err != nil {
-		return err
-	}
-
-	if isOnline {
-		s.logger.Warn("HandleMissedSpan: heimdall is online. All spans should be synced")
-
-		// if heimdall is online, we expect all spans to be synced without the next hack
-		return nil
-	}
-
-	span, ok, err := s.store.Spans().Entity(ctx, spanID-1)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("failed to previous span in HandleMissedSpan")
-	}
-
-	span.Id = SpanId(spanID)
-	span.StartBlock, span.EndBlock = span.EndBlock+1, span.EndBlock+1+(span.EndBlock-span.StartBlock)
-
-	if err := s.store.Spans().PutEntity(ctx, spanID, span); err != nil {
-		return err
-	}
-
-	s.spanScraper.observers.NotifySync([]*Span{span})
-	return nil
-}
-
 func (s *Service) Span(ctx context.Context, id uint64) (*Span, bool, error) {
 	return s.reader.Span(ctx, id)
 }
@@ -210,6 +179,11 @@ func (s *Service) SynchronizeCheckpoints(ctx context.Context) (*Checkpoint, bool
 func (s *Service) SynchronizeMilestones(ctx context.Context) (*Milestone, bool, error) {
 	s.logger.Info(heimdallLogPrefix("synchronizing milestones..."))
 	return s.milestoneScraper.Synchronize(ctx)
+}
+
+func (s *Service) AnticipateNewSpanWithTimeout(ctx context.Context, timeout time.Duration) (bool, error) {
+	s.logger.Info(heimdallLogPrefix(fmt.Sprintf("anticipating new span update within %.0f seconds", timeout.Seconds())))
+	return s.spanBlockProducersTracker.AnticipateNewSpanWithTimeout(ctx, timeout)
 }
 
 func (s *Service) SynchronizeSpans(ctx context.Context, blockNum uint64) error {
@@ -251,6 +225,37 @@ func (s *Service) synchronizeSpans(ctx context.Context) error {
 		return err
 	}
 
+	return nil
+}
+
+// wait until heimdall CatchingUp status is false
+func (s *Service) WaitUntilHeimdallIsSynced(ctx context.Context, retryInterval time.Duration) error {
+	logInterval := 10 * time.Second
+	var lastLogTime time.Time
+
+	catchingUp, err := s.IsCatchingUp(ctx)
+	if err != nil {
+		return err
+	}
+	if !catchingUp {
+		return nil
+	}
+	for catchingUp {
+		if time.Since(lastLogTime) >= logInterval {
+			s.logger.Warn("waiting for heimdall to be synced")
+			lastLogTime = time.Now()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryInterval):
+			catchingUp, err = s.IsCatchingUp(ctx)
+			if err != nil {
+				return err
+			}
+		}
+
+	}
 	return nil
 }
 
@@ -358,7 +363,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.RegisterSpanObserver(func(span *Span) {
-		s.spanBlockProducersTracker.ObserveSpanAsync(span)
+		s.spanBlockProducersTracker.ObserveSpanAsync(ctx, span)
 	})
 
 	milestoneObserver := s.RegisterMilestoneObserver(func(milestone *Milestone) {

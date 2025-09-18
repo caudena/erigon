@@ -83,6 +83,7 @@ var (
 	datadirCli, chain              string
 	filePath                       string
 	forceRebuild                   bool
+	releaseCheck                   bool
 	verify                         bool
 	verifyFailfast                 bool
 	_verifyFiles                   string
@@ -154,6 +155,7 @@ func init() {
 	withDataDir(printTorrentHashes)
 	withChainFlag(printTorrentHashes)
 	printTorrentHashes.Flags().BoolVar(&all, "all", false, "Produce all possible .torrent files")
+	printTorrentHashes.Flags().BoolVar(&releaseCheck, "release", false, "For 3.0 and 3.1 comparing only")
 	printTorrentHashes.PersistentFlags().BoolVar(&forceRebuild, "rebuild", false, "Force re-create .torrent files")
 	printTorrentHashes.Flags().StringVar(&targetFile, "targetfile", "", "write output to file")
 	if err := printTorrentHashes.MarkFlagFilename("targetfile"); err != nil {
@@ -405,7 +407,7 @@ var torrentClean = &cobra.Command{
 			if !strings.HasSuffix(de.Name(), ".torrent") || strings.HasPrefix(de.Name(), ".") {
 				return nil
 			}
-			err = os.Remove(filepath.Join(dirs.Snap, path))
+			err = dir.RemoveFile(filepath.Join(dirs.Snap, path))
 			if err != nil {
 				logger.Warn("[snapshots.torrent] remove", "err", err, "path", path)
 				return err
@@ -557,7 +559,7 @@ func doPrintTorrentHashes(ctx context.Context, logger log.Logger) error {
 			return err
 		}
 		for _, filePath := range files {
-			if err := os.Remove(filePath); err != nil {
+			if err := dir.RemoveFile(filePath); err != nil {
 				return err
 			}
 		}
@@ -572,6 +574,13 @@ func doPrintTorrentHashes(ctx context.Context, logger log.Logger) error {
 	torrents, err := downloader.AllTorrentSpecs(dirs, tf)
 	if err != nil {
 		return err
+	}
+
+	if releaseCheck {
+		torrents, err = downloader.AllTorrentReleaseSpecs(dirs, tf)
+		if err != nil {
+			return err
+		}
 	}
 
 	for _, t := range torrents {

@@ -35,6 +35,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/erigontech/erigon-lib/chain/networkname"
+
 	"github.com/c2h5oh/datasize"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/sync/semaphore"
@@ -43,7 +45,7 @@ import (
 	"github.com/erigontech/erigon-lib/common/compress"
 	"github.com/erigontech/erigon-lib/common/datadir"
 	"github.com/erigontech/erigon-lib/common/dbg"
-	"github.com/erigontech/erigon-lib/common/dir"
+	commondir "github.com/erigontech/erigon-lib/common/dir"
 	"github.com/erigontech/erigon-lib/common/disk"
 	"github.com/erigontech/erigon-lib/common/mem"
 	"github.com/erigontech/erigon-lib/config3"
@@ -218,7 +220,7 @@ var snapshotCommand = cli.Command{
 			Name: "rm-all-state-snapshots",
 			Action: func(cliCtx *cli.Context) error {
 				dirs := datadir.New(cliCtx.String(utils.DataDirFlag.Name))
-				return dir.DeleteFiles(dirs.SnapIdx, dirs.SnapHistory, dirs.SnapDomain, dirs.SnapAccessors)
+				return commondir.DeleteFiles(dirs.SnapIdx, dirs.SnapHistory, dirs.SnapDomain, dirs.SnapAccessors)
 			},
 			Flags: joinFlags([]cli.Flag{&utils.DataDirFlag}),
 		},
@@ -337,7 +339,7 @@ func doRmStateSnapshots(cliCtx *cli.Context) error {
 	files := make([]snaptype.FileInfo, 0)
 	commitmentFilesWithState := make([]snaptype.FileInfo, 0)
 	for _, dirPath := range []string{dirs.SnapIdx, dirs.SnapHistory, dirs.SnapDomain, dirs.SnapAccessors} {
-		filePaths, err := dir.ListFiles(dirPath)
+		filePaths, err := commondir.ListFiles(dirPath)
 		if err != nil {
 			return err
 		}
@@ -537,8 +539,8 @@ func doRmStateSnapshots(cliCtx *cli.Context) error {
 
 	var removed uint64
 	for _, res := range toRemove {
-		os.Remove(res.Path)
-		os.Remove(res.Path + ".torrent")
+		commondir.RemoveFile(res.Path)
+		commondir.RemoveFile(res.Path + ".torrent")
 		removed++
 	}
 	fmt.Printf("removed %d state snapshot segments files\n", removed)
@@ -682,6 +684,7 @@ func doIntegrity(cliCtx *cli.Context) error {
 		if requestedCheck != "" && requestedCheck != chk {
 			continue
 		}
+		logger.Info("[integrity] starting", "check", chk)
 		switch chk {
 		case integrity.BlocksTxnID:
 			if err := blockReader.(*freezeblocks.BlockReader).IntegrityTxnID(failFast); err != nil {
@@ -704,23 +707,43 @@ func doIntegrity(cliCtx *cli.Context) error {
 				return err
 			}
 		case integrity.BorEvents:
+			if !CheckBorChain(chainConfig.ChainName) {
+				logger.Info("BorEvents skipped because not bor chain")
+				continue
+			}
 			if err := integrity.ValidateBorEvents(ctx, db, blockReader, 0, 0, failFast); err != nil {
 				return err
 			}
 		case integrity.BorSpans:
+			if !CheckBorChain(chainConfig.ChainName) {
+				logger.Info("BorSpans skipped because not bor chain")
+				continue
+			}
 			if err := integrity.ValidateBorSpans(ctx, logger, dirs, borSnaps, failFast); err != nil {
 				return err
 			}
 		case integrity.BorCheckpoints:
+			if !CheckBorChain(chainConfig.ChainName) {
+				logger.Info("BorCheckpoints skipped because not bor chain")
+				continue
+			}
 			if err := integrity.ValidateBorCheckpoints(ctx, logger, dirs, borSnaps, failFast); err != nil {
 				return err
 			}
 		case integrity.BorMilestones:
+			if !CheckBorChain(chainConfig.ChainName) {
+				logger.Info("BorMilestones skipped because not bor chain")
+				continue
+			}
 			if err := integrity.ValidateBorMilestones(ctx, logger, dirs, borSnaps, failFast); err != nil {
 				return err
 			}
 		case integrity.ReceiptsNoDups:
 			if err := integrity.CheckReceiptsNoDups(ctx, db, blockReader, failFast); err != nil {
+				return err
+			}
+		case integrity.Publishable:
+			if err := doPublishable(cliCtx); err != nil {
 				return err
 			}
 		default:
@@ -729,6 +752,10 @@ func doIntegrity(cliCtx *cli.Context) error {
 	}
 
 	return nil
+}
+
+func CheckBorChain(chainName string) bool {
+	return slices.Contains([]string{networkname.BorMainnet, networkname.Amoy, networkname.BorE2ETestChain2Val, networkname.BorDevnet}, chainName)
 }
 
 func checkIfBlockSnapshotsPublishable(snapDir string) error {
@@ -782,9 +809,6 @@ func checkIfBlockSnapshotsPublishable(snapDir string) error {
 	}); err != nil {
 		return err
 	}
-	if sum != maxTo {
-		return fmt.Errorf("sum %d != maxTo %d", sum, maxTo)
-	}
 	if err := doBlockSnapshotsRangeCheck(snapDir, ".seg", "headers"); err != nil {
 		return err
 	}
@@ -805,6 +829,9 @@ func checkIfBlockSnapshotsPublishable(snapDir string) error {
 	}
 	if err := doBlockSnapshotsRangeCheck(snapDir, ".idx", "transactions-to-block"); err != nil {
 		return fmt.Errorf("failed to check transactions-to-block idx: %w", err)
+	}
+	if sum != maxTo {
+		return fmt.Errorf("sum %d != maxTo %d", sum, maxTo)
 	}
 	// Iterate over all fies in snapDir
 	return nil
@@ -851,7 +878,7 @@ func checkIfStateSnapshotsPublishable(dirs datadir.Dirs) error {
 			// check that the index file exist
 			if libstate.Schema[snapType].Accessors.Has(libstate.AccessorBTree) {
 				fileName := strings.Replace(expectedFileName, ".kv", ".bt", 1)
-				exists, err := dir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
+				exists, err := commondir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
 				if err != nil {
 					return err
 				}
@@ -861,7 +888,7 @@ func checkIfStateSnapshotsPublishable(dirs datadir.Dirs) error {
 			}
 			if libstate.Schema[snapType].Accessors.Has(libstate.AccessorExistence) {
 				fileName := strings.Replace(expectedFileName, ".kv", ".kvei", 1)
-				exists, err := dir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
+				exists, err := commondir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
 				if err != nil {
 					return err
 				}
@@ -871,7 +898,7 @@ func checkIfStateSnapshotsPublishable(dirs datadir.Dirs) error {
 			}
 			if libstate.Schema[snapType].Accessors.Has(libstate.AccessorHashMap) {
 				fileName := strings.Replace(expectedFileName, ".kv", ".kvi", 1)
-				exists, err := dir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
+				exists, err := commondir.FileExist(filepath.Join(dirs.SnapDomain, fileName))
 				if err != nil {
 					return err
 				}
@@ -973,6 +1000,9 @@ func doBlockSnapshotsRangeCheck(snapDir string, suffix string, snapType string) 
 	sort.Slice(intervals, func(i, j int) bool {
 		return intervals[i].from < intervals[j].from
 	})
+	if intervals[0].from != 0 {
+		return fmt.Errorf("gap at start: snapshots start at (%d-%d). snaptype: %s", intervals[0].from, intervals[0].to, snapType)
+	}
 	// Check that there are no gaps
 	for i := 1; i < len(intervals); i++ {
 		if intervals[i].from != intervals[i-1].to {
@@ -1001,7 +1031,7 @@ func doPublishable(cliCtx *cli.Context) error {
 		return err
 	}
 	// check if salt-state.txt and salt-blocks.txt exist
-	exists, err := dir.FileExist(filepath.Join(dat.Snap, "salt-state.txt"))
+	exists, err := commondir.FileExist(filepath.Join(dat.Snap, "salt-state.txt"))
 	if err != nil {
 		return err
 	}
@@ -1009,7 +1039,7 @@ func doPublishable(cliCtx *cli.Context) error {
 		return fmt.Errorf("missing file %s", filepath.Join(dat.Snap, "salt-state.txt"))
 	}
 
-	exists, err = dir.FileExist(filepath.Join(dat.Snap, "salt-blocks.txt"))
+	exists, err = commondir.FileExist(filepath.Join(dat.Snap, "salt-blocks.txt"))
 	if err != nil {
 		return err
 	}
@@ -1026,7 +1056,7 @@ func doClearIndexing(cliCtx *cli.Context) error {
 	snapDir := dat.Snap
 
 	// Delete accessorsDir
-	if err := os.RemoveAll(accessorsDir); err != nil {
+	if err := commondir.RemoveAll(accessorsDir); err != nil {
 		return fmt.Errorf("failed to delete accessorsDir: %w", err)
 	}
 
@@ -1041,10 +1071,10 @@ func doClearIndexing(cliCtx *cli.Context) error {
 	}
 
 	// remove salt-state.txt and salt-blocks.txt
-	os.Remove(filepath.Join(snapDir, "salt-state.txt"))
-	os.Remove(filepath.Join(snapDir, "salt-state.txt.torrent"))
-	os.Remove(filepath.Join(snapDir, "salt-blocks.txt"))
-	os.Remove(filepath.Join(snapDir, "salt-blocks.txt.torrent"))
+	commondir.RemoveFile(filepath.Join(snapDir, "salt-state.txt"))
+	commondir.RemoveFile(filepath.Join(snapDir, "salt-state.txt.torrent"))
+	commondir.RemoveFile(filepath.Join(snapDir, "salt-blocks.txt"))
+	commondir.RemoveFile(filepath.Join(snapDir, "salt-blocks.txt.torrent"))
 
 	return nil
 }
@@ -1063,7 +1093,7 @@ func deleteFilesWithExtensions(dir string, extensions []string) error {
 		// Check file extensions and delete matching files
 		for _, ext := range extensions {
 			if strings.HasSuffix(info.Name(), ext) {
-				if err := os.Remove(path); err != nil {
+				if err := commondir.RemoveFile(path); err != nil {
 					return err
 				}
 			}
@@ -1521,7 +1551,7 @@ func doUnmerge(cliCtx *cli.Context, dirs datadir.Dirs) error {
 	sourcefile := cliCtx.String(SnapshotFileFlag.Name)
 	sourcefile = filepath.Join(dirs.Snap, sourcefile)
 
-	exists, err := dir.FileExist(sourcefile)
+	exists, err := commondir.FileExist(sourcefile)
 	if err != nil {
 		return err
 	}
@@ -1699,7 +1729,7 @@ func doRetireCommand(cliCtx *cli.Context, dirs datadir.Dirs) error {
 	blocksInSnapshots := blockReader.FrozenBlocks()
 
 	if chainConfig.Bor != nil {
-		blocksInSnapshots = min(blocksInSnapshots, blockReader.FrozenBorBlocks())
+		blocksInSnapshots = min(blocksInSnapshots, blockReader.FrozenBorBlocks(false))
 	}
 
 	from2, to2, ok := freezeblocks.CanRetire(to, blocksInSnapshots, coresnaptype.Enums.Headers, nil)

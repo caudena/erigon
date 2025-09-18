@@ -86,6 +86,14 @@ func NewValidatorSet(valz []*Validator) *ValidatorSet {
 	return vals
 }
 
+func (vals *ValidatorSet) ValidatorAddresses() []libcommon.Address {
+	addresses := make([]libcommon.Address, len(vals.Validators))
+	for i, val := range vals.Validators {
+		addresses[i] = val.Address
+	}
+	return addresses
+}
+
 // Nil or empty validator sets are invalid.
 func (vals *ValidatorSet) IsNilOrEmpty() bool {
 	return vals == nil || len(vals.Validators) == 0
@@ -259,7 +267,7 @@ func (vals *ValidatorSet) Copy() *ValidatorSet {
 
 	return &ValidatorSet{
 		Validators:       validatorListCopy(vals.Validators),
-		Proposer:         vals.Proposer,
+		Proposer:         vals.Proposer.Copy(),
 		totalVotingPower: vals.totalVotingPower,
 		validatorsMap:    validatorsMap,
 	}

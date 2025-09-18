@@ -743,7 +743,7 @@ var (
 	DbPageSizeFlag = cli.StringFlag{
 		Name:  "db.pagesize",
 		Usage: "DB is splitted to 'pages' of fixed size. Can't change DB creation. Must be power of 2 and '256b <= pagesize <= 64kb'. Default: equal to OperationSystem's pageSize. Bigger pageSize causing: 1. More writes to disk during commit 2. Smaller b-tree high 3. Less fragmentation 4. Less overhead on 'free-pages list' maintainance (a bit faster Put/Commit) 5. If expecting DB-size > 8Tb then set pageSize >= 8Kb",
-		Value: "4KB",
+		Value: "16KB",
 	}
 	DbSizeLimitFlag = cli.StringFlag{
 		Name:  "db.size.limit",
@@ -1131,6 +1131,10 @@ var (
 		Name:  "polygon.pos.ssf.block",
 		Usage: "Enabling Polygon PoS Single Slot Finality since block",
 	}
+	PolygonPosWitProtocolFlag = cli.BoolFlag{
+		Name:  "polygon.wit-protocol",
+		Usage: "Enable WIT protocol for stateless witness data exchange (auto-enabled for Bor chains)",
+	}
 	KeepExecutionProofsFlag = cli.BoolFlag{
 		Name:  "prune.experimental.include-commitment-history",
 		Usage: "Enables blazing fast eth_getProof for executed block",
@@ -1270,7 +1274,7 @@ func NewP2PConfig(
 	port uint,
 	protocol uint,
 	allowedPorts []uint,
-	metricsEnabled bool,
+	metricsEnabled, witProtocol bool,
 ) (*p2p.Config, error) {
 	var enodeDBPath string
 	switch protocol {
@@ -1288,17 +1292,18 @@ func NewP2PConfig(
 	}
 
 	cfg := &p2p.Config{
-		ListenAddr:      fmt.Sprintf(":%d", port),
-		MaxPeers:        maxPeers,
-		MaxPendingPeers: maxPendPeers,
-		NAT:             nat.Any(),
-		NoDiscovery:     nodiscover,
-		PrivateKey:      serverKey,
-		Name:            nodeName,
-		NodeDatabase:    enodeDBPath,
-		AllowedPorts:    allowedPorts,
-		TmpDir:          dirs.Tmp,
-		MetricsEnabled:  metricsEnabled,
+		ListenAddr:        fmt.Sprintf(":%d", port),
+		MaxPeers:          maxPeers,
+		MaxPendingPeers:   maxPendPeers,
+		NAT:               nat.Any(),
+		NoDiscovery:       nodiscover,
+		PrivateKey:        serverKey,
+		Name:              nodeName,
+		NodeDatabase:      enodeDBPath,
+		AllowedPorts:      allowedPorts,
+		TmpDir:            dirs.Tmp,
+		MetricsEnabled:    metricsEnabled,
+		EnableWitProtocol: witProtocol,
 	}
 	if netRestrict != "" {
 		cfg.NetRestrict = new(netutil.Netlist)
@@ -1453,6 +1458,10 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config, nodeName, datadir string, l
 
 	if ctx.IsSet(MetricsEnabledFlag.Name) {
 		cfg.MetricsEnabled = ctx.Bool(MetricsEnabledFlag.Name)
+	}
+
+	if ctx.IsSet(PolygonPosWitProtocolFlag.Name) {
+		cfg.EnableWitProtocol = ctx.Bool(PolygonPosWitProtocolFlag.Name)
 	}
 
 	logger.Info("Maximum peer count", "total", cfg.MaxPeers)

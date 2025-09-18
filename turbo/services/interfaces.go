@@ -69,7 +69,7 @@ type BorEventReader interface {
 type BorSpanReader interface {
 	Span(ctx context.Context, tx kv.Tx, spanId uint64) (*heimdall.Span, bool, error)
 	LastSpanId(ctx context.Context, tx kv.Tx) (uint64, bool, error)
-	LastFrozenSpanId() uint64
+	LastFrozenSpanId() (uint64, bool, error)
 }
 
 type BorMilestoneReader interface {
@@ -125,7 +125,7 @@ type FullBlockReader interface {
 	CanonicalReader
 
 	FrozenBlocks() uint64
-	FrozenBorBlocks() uint64
+	FrozenBorBlocks(align bool) uint64
 	FrozenFiles() (list []string)
 	FreezingCfg() ethconfig.BlocksFreezing
 	CanPruneTo(currentBlockInDB uint64) (canPruneBlocksTo uint64)
