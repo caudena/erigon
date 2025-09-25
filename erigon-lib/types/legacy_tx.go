@@ -441,7 +441,7 @@ func (tx *LegacyTx) Sender(signer Signer) (common.Address, error) {
 		}
 	}
 
-	addr, err := signer.Sender(tx)
+	addr, _, err := signer.Sender(tx)
 	if err != nil {
 		return common.Address{}, err
 	}

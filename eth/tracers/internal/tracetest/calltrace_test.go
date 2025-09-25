@@ -247,7 +247,7 @@ func benchTracer(b *testing.B, tracerName string, test *callTracerTest) {
 	if err != nil {
 		b.Fatalf("failed to prepare transaction for tracing: %v", err)
 	}
-	origin, _ := signer.Sender(tx)
+	origin, _, _ := signer.Sender(tx)
 	baseFee := uint256.MustFromBig((*big.Int)(test.Context.BaseFee))
 	txContext := evmtypes.TxContext{
 		Origin:   origin,
@@ -308,7 +308,7 @@ func TestZeroValueToNotExitCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err %v", err)
 	}
-	origin, _ := signer.Sender(tx)
+	origin, _, _ := signer.Sender(tx)
 	txContext := evmtypes.TxContext{
 		Origin:   origin,
 		GasPrice: uint256.NewInt(1),
