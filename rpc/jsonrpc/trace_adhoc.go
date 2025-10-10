@@ -1540,7 +1540,12 @@ func (api *TraceAPIImpl) doCall(ctx context.Context, dbtx kv.Tx, stateReader sta
 	// Make sure the context is cancelled when the call has completed
 	// this makes sure resources are cleaned up.
 	defer cancel()
-
+	if hr, ok := stateReader.(*state.HistoryReaderV3); ok {
+		if setter, ok := interface{}(hr).(interface{ SetContext(context.Context) }); ok {
+			setter.SetContext(ctx)
+		}
+	}
+	
 	useParent := false
 	if header == nil {
 		header = parentHeader

@@ -1260,7 +1260,7 @@ func ReadReceiptsCacheV2(tx kv.TemporalTx, block *types.Block, txNumReader rawdb
 		return
 	}
 
-	for txnID := _min; txnID < _max+1; txnID++ {
+	for txnID := _min; txnID < _max; txnID++ {
 		v, ok, err := tx.HistorySeek(kv.RCacheDomain, receiptCacheKey, txnID+1)
 		if err != nil {
 			return nil, err

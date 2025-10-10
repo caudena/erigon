@@ -17,6 +17,7 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -37,19 +38,21 @@ type HistoryReaderV3 struct {
 	trace     bool
 	ttx       kv.TemporalTx
 	composite []byte
+	ctx       context.Context
 }
 
 func NewHistoryReaderV3() *HistoryReaderV3 {
-	return &HistoryReaderV3{composite: make([]byte, 20+32)}
+	return &HistoryReaderV3{composite: make([]byte, 20+32), ctx: context.Background()}
 }
 
 func (hr *HistoryReaderV3) String() string {
 	return fmt.Sprintf("txNum:%d", hr.txNum)
 }
-func (hr *HistoryReaderV3) SetTx(tx kv.TemporalTx) { hr.ttx = tx }
-func (hr *HistoryReaderV3) SetTxNum(txNum uint64)  { hr.txNum = txNum }
-func (hr *HistoryReaderV3) GetTxNum() uint64       { return hr.txNum }
-func (hr *HistoryReaderV3) SetTrace(trace bool)    { hr.trace = trace }
+func (hr *HistoryReaderV3) SetTx(tx kv.TemporalTx)         { hr.ttx = tx }
+func (hr *HistoryReaderV3) SetTxNum(txNum uint64)          { hr.txNum = txNum }
+func (hr *HistoryReaderV3) GetTxNum() uint64               { return hr.txNum }
+func (hr *HistoryReaderV3) SetTrace(trace bool)            { hr.trace = trace }
+func (hr *HistoryReaderV3) SetContext(ctx context.Context) { hr.ctx = ctx }
 
 // Gets the txNum where Account, Storage and Code history begins.
 // If the node is an archive node all history will be available therefore
@@ -124,6 +127,10 @@ func (hr *HistoryReaderV3) HasStorage(address common.Address) (bool, error) {
 	// If the address has storage slots, but they are all empty, then we return "no storage"
 	// If we see a non-empty slot for then address, then we return "has storage" immediately
 	for it.HasNext() {
+		if err := common.Stopped(hr.ctx.Done()); err != nil {
+			return false, err
+		}
+		
 		_, v, err := it.Next()
 		if err != nil {
 			return false, err
