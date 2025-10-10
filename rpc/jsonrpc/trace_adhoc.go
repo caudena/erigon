@@ -1351,9 +1351,6 @@ func (api *TraceAPIImpl) doCallBlock(ctx context.Context, dbtx kv.Tx, stateReade
 		if isHistoricalStateReader {
 			historicalStateReader.SetTxNum(baseTxNum + uint64(txIndex))
 		}
-		if err := common.Stopped(ctx.Done()); err != nil {
-			return nil, nil, err
-		}
 
 		var traceTypeTrace, traceTypeStateDiff, traceTypeVmTrace bool
 		args := callParams[txIndex]
