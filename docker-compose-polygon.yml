@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  polygon:
+    image: "${DOCKER_IMAGE}:${BUDDY_EXECUTION_REVISION}"
+    container_name: polygon
+    restart: unless-stopped
+    ports:
+      - "${VLAN_IP}:${METRICS_PORT}:6061"
+      - "${VLAN_IP}:8555:8545"
+      - "${VLAN_IP}:8557:8547"
+      - "${EXTERNAL_IP}:30304:30304"
+      - "${EXTERNAL_IP}:30304:30304/udp"
+      - "${EXTERNAL_IP}:30305:30305"
+      - "${EXTERNAL_IP}:30305:30305/udp"
+      - "${EXTERNAL_IP}:42069:42069"
+      - "${EXTERNAL_IP}:42069:42069/udp"
+    command: |
+      erigon
+      --chain=bor-mainnet
+      --bor.heimdall=https://heimdall-api.polygon.technology
+      --datadir=/polygon_data
+      --prune.mode=archive
+      --port=30304
+      --p2p.allowed-ports=30304,30305,30306,30307
+      --http
+      --http.addr=0.0.0.0
+      --http.port=8545
+      --http.api=eth,web3,net,debug,trace,txpool,bor
+      --torrent.download.rate=256mb
+      --rpc.batch.limit=1400
+      --ws
+      --ws.port=8547
+      --persist.receipts
+      --rpc.evmtimeout=2m
+      --metrics
+      --metrics.addr=0.0.0.0
+      --metrics.port=6061
+    volumes:
+      - /home/deploy/polygon_data/data_dir:/polygon_data
+      - /home/deploy/polygon_node/logs:/logs
+    logging:
+      driver: local
