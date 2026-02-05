@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,27 +36,27 @@ import (
 	"github.com/hashicorp/golang-lru/v2/simplelru"
 	"github.com/holiman/uint256"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/common/assert"
-	"github.com/erigontech/erigon-lib/common/hexutil"
-	"github.com/erigontech/erigon-lib/common/u256"
-	libkzg "github.com/erigontech/erigon-lib/crypto/kzg"
-	"github.com/erigontech/erigon-lib/gointerfaces"
-	"github.com/erigontech/erigon-lib/gointerfaces/grpcutil"
-	"github.com/erigontech/erigon-lib/gointerfaces/remoteproto"
-	"github.com/erigontech/erigon-lib/gointerfaces/sentryproto"
-	"github.com/erigontech/erigon-lib/gointerfaces/txpoolproto"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/assert"
+	libkzg "github.com/erigontech/erigon/common/crypto/kzg"
+	"github.com/erigontech/erigon/common/hexutil"
+	"github.com/erigontech/erigon/common/log/v3"
+	"github.com/erigontech/erigon/common/u256"
 	"github.com/erigontech/erigon/db/kv"
 	"github.com/erigontech/erigon/db/kv/kvcache"
 	"github.com/erigontech/erigon/db/kv/mdbx"
 	"github.com/erigontech/erigon/db/kv/order"
 	"github.com/erigontech/erigon/diagnostics/diaglib"
-	"github.com/erigontech/erigon/eth/ethconfig"
 	"github.com/erigontech/erigon/execution/chain"
-	"github.com/erigontech/erigon/execution/chain/params"
-	"github.com/erigontech/erigon/execution/fixedgas"
+	"github.com/erigontech/erigon/execution/protocol/fixedgas"
+	"github.com/erigontech/erigon/execution/protocol/params"
 	"github.com/erigontech/erigon/execution/types"
+	"github.com/erigontech/erigon/node/ethconfig"
+	"github.com/erigontech/erigon/node/gointerfaces"
+	"github.com/erigontech/erigon/node/gointerfaces/grpcutil"
+	"github.com/erigontech/erigon/node/gointerfaces/remoteproto"
+	"github.com/erigontech/erigon/node/gointerfaces/sentryproto"
+	"github.com/erigontech/erigon/node/gointerfaces/txpoolproto"
 	"github.com/erigontech/erigon/txnprovider"
 	"github.com/erigontech/erigon/txnprovider/txpool/txpoolcfg"
 )
@@ -994,7 +995,6 @@ func toBlobs(_blobs [][]byte) []*goethkzg.Blob {
 func (p *TxPool) validateTx(txn *TxnSlot, isLocal bool, stateCache kvcache.CacheView) txpoolcfg.DiscardReason {
 	isEIP3860 := p.isShanghai() || p.isAgra()
 	isPrague := p.isPrague() || p.isBhilai()
-	isEIP7825 := p.isOsaka()
 	if isEIP3860 && txn.Creation && txn.DataLen > params.MaxInitCodeSize {
 		return txpoolcfg.InitCodeTooLarge // EIP-3860
 	}
@@ -1061,7 +1061,7 @@ func (p *TxPool) validateTx(txn *TxnSlot, isLocal bool, stateCache kvcache.Cache
 		}
 		return txpoolcfg.GasLimitTooHigh
 	}
-	if isEIP7825 && txn.Gas > params.MaxTxnGasLimit {
+	if txn.Gas > params.MaxTxnGasLimit {
 		if txn.Traced {
 			p.logger.Info(fmt.Sprintf("TX TRACING: validateTx txn.gas > max gas limit idHash=%x gas=%d", txn.IDHash, txn.Gas))
 		}
@@ -1309,7 +1309,7 @@ func (p *TxPool) ValidateSerializedTxn(serializedTxn []byte) error {
 		txnMaxSize = 4 * txnSlotSize // 128KB
 
 		// Should be enough for a transaction with 6 blobs
-		blobTxnMaxSize = 800_000
+		blobTxnMaxSize = 1024 * 1024
 	)
 	txnType, err := PeekTransactionType(serializedTxn)
 	if err != nil {
@@ -1320,7 +1320,7 @@ func (p *TxPool) ValidateSerializedTxn(serializedTxn []byte) error {
 		maxSize = blobTxnMaxSize
 	}
 	if len(serializedTxn) > maxSize {
-		return ErrRlpTooBig
+		return fmt.Errorf("%w: type=%d", ErrRlpTooBig, txnType)
 	}
 	return nil
 }
@@ -1715,21 +1715,32 @@ func (p *TxPool) addLocked(mt *metaTxn, announcements *Announcements) txpoolcfg.
 		p.logger.Info("senderID not registered, discarding transaction for safety")
 		return txpoolcfg.InvalidSender
 	}
-	if _, ok := p.auths[AuthAndNonce{senderAddr.String(), mt.TxnSlot.Nonce}]; ok {
+	if _, ok := p.auths[AuthAndNonce{senderAddr, mt.TxnSlot.Nonce}]; ok {
 		return txpoolcfg.ErrAuthorityReserved
+	}
+
+	now := time.Now().Unix()
+	censoring := chain.ConfigValueLookup(p.chainConfig.CensoringSchedule, uint64(now))
+	if censoring != nil && slices.Contains(censoring.From, senderAddr) {
+		p.logger.Info("discarding transaction from a bad sender", "sender", senderAddr)
+		return txpoolcfg.InvalidSender
 	}
 
 	// Check if we have txn with same authorization in the pool
 	if mt.TxnSlot.Type == SetCodeTxnType {
 		for _, a := range mt.TxnSlot.AuthAndNonces {
 			// Self authorization nonce should be senderNonce + 1
-			if a.authority == senderAddr.String() && a.nonce != mt.TxnSlot.Nonce+1 {
+			if a.authority == senderAddr && a.nonce != mt.TxnSlot.Nonce+1 {
 				p.logger.Debug("Self authorization nonce should be senderNonce + 1", "authority", a.authority, "txn", fmt.Sprintf("%x", mt.TxnSlot.IDHash))
 				return txpoolcfg.NonceTooLow
 			}
 			if _, ok := p.auths[AuthAndNonce{a.authority, a.nonce}]; ok {
 				p.logger.Debug("setCodeTxn ", "DUPLICATE authority", a.authority, "at nonce", a.nonce, "txn", fmt.Sprintf("%x", mt.TxnSlot.IDHash))
 				return txpoolcfg.ErrAuthorityReserved
+			}
+			if censoring != nil && censoring.Is7702Enabled && slices.Contains(censoring.From, a.authority) {
+				p.logger.Info("discarding transaction from a bad sender", "authority", a.authority)
+				return txpoolcfg.InvalidSender
 			}
 		}
 		for _, a := range mt.TxnSlot.AuthAndNonces {
@@ -2154,7 +2165,7 @@ func (p *TxPool) promote(pendingBaseFee uint64, pendingBlobFee uint64, announcem
 	// Discard worst transactions from pending pool until it is within capacity limit
 	for p.pending.Len() > p.pending.limit {
 		tx := p.pending.PopWorst()
-		p.discardLocked(p.pending.PopWorst(), txpoolcfg.PendingPoolOverflow)
+		p.discardLocked(tx, txpoolcfg.PendingPoolOverflow)
 		sendChangeBatchEventToDiagnostics("Pending", "remove", []diaglib.TxnHashOrder{
 			{
 				OrderMarker: uint8(tx.subPool),
@@ -2695,6 +2706,8 @@ func (p *TxPool) logStats() {
 func (p *TxPool) deprecatedForEach(_ context.Context, f func(rlp []byte, sender common.Address, t SubPoolType), tx kv.Tx) {
 	var txns []*metaTxn
 	var senders []common.Address
+	var subPoolTypes []SubPoolType
+	var rlpValues [][]byte
 
 	p.lock.Lock()
 
@@ -2702,6 +2715,8 @@ func (p *TxPool) deprecatedForEach(_ context.Context, f func(rlp []byte, sender 
 		if sender, found := p.senders.senderID2Addr[mt.TxnSlot.SenderID]; found {
 			txns = append(txns, mt)
 			senders = append(senders, sender)
+			subPoolTypes = append(subPoolTypes, mt.currentSubPool)
+			rlpValues = append(rlpValues, mt.TxnSlot.Rlp)
 		}
 
 		return true
@@ -2710,7 +2725,7 @@ func (p *TxPool) deprecatedForEach(_ context.Context, f func(rlp []byte, sender 
 	p.lock.Unlock()
 
 	for i := range txns {
-		slotRlp := txns[i].TxnSlot.Rlp
+		slotRlp := rlpValues[i]
 		if slotRlp == nil {
 			v, err := tx.GetOne(kv.PoolTransaction, txns[i].TxnSlot.IDHash[:])
 			if err != nil {
@@ -2724,7 +2739,7 @@ func (p *TxPool) deprecatedForEach(_ context.Context, f func(rlp []byte, sender 
 			slotRlp = v[20:]
 		}
 
-		f(slotRlp, senders[i], txns[i].currentSubPool)
+		f(slotRlp, senders[i], subPoolTypes[i])
 	}
 }
 

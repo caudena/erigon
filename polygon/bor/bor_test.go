@@ -26,17 +26,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/crypto"
-	"github.com/erigontech/erigon-lib/gointerfaces/sentryproto"
-	"github.com/erigontech/erigon-lib/log/v3"
-	"github.com/erigontech/erigon/core"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/crypto"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/db/kv/prune"
 	"github.com/erigontech/erigon/execution/chain"
-	"github.com/erigontech/erigon/execution/consensus"
+	"github.com/erigontech/erigon/execution/protocol/rules"
 	"github.com/erigontech/erigon/execution/rlp"
-	"github.com/erigontech/erigon/execution/stages/mock"
+	"github.com/erigontech/erigon/execution/tests/blockgen"
+	"github.com/erigontech/erigon/execution/tests/mock"
 	"github.com/erigontech/erigon/execution/types"
+	"github.com/erigontech/erigon/node/gointerfaces/sentryproto"
 	"github.com/erigontech/erigon/p2p/protocols/eth"
 	"github.com/erigontech/erigon/polygon/bor"
 	"github.com/erigontech/erigon/polygon/bor/borabi"
@@ -155,11 +155,11 @@ type spanner struct {
 	currentSpan      heimdall.Span
 }
 
-func (c spanner) GetCurrentSpan(_ consensus.SystemCall) (*heimdall.Span, error) {
+func (c spanner) GetCurrentSpan(_ rules.SystemCall) (*heimdall.Span, error) {
 	return &c.currentSpan, nil
 }
 
-func (c *spanner) CommitSpan(heimdallSpan heimdall.Span, syscall consensus.SystemCall) error {
+func (c *spanner) CommitSpan(heimdallSpan heimdall.Span, syscall rules.SystemCall) error {
 	c.currentSpan = heimdallSpan
 	return nil
 }
@@ -170,8 +170,8 @@ type validator struct {
 	blocks   map[uint64]*types.Block
 }
 
-func (v validator) generateChain(length int) (*core.ChainPack, error) {
-	return core.GenerateChain(v.ChainConfig, v.Genesis, v.Engine, v.DB, length, func(i int, block *core.BlockGen) {
+func (v validator) generateChain(length int) (*blockgen.ChainPack, error) {
+	return blockgen.GenerateChain(v.ChainConfig, v.Genesis, v.Engine, v.DB, length, func(i int, block *blockgen.BlockGen) {
 		v.blocks[block.GetParent().NumberU64()] = block.GetParent()
 	})
 }
@@ -346,7 +346,7 @@ func testVerify(t *testing.T, noValidators int, chainLength int) {
 		validators[i] = newValidator(t, heimdall, blocks)
 	}
 
-	chains := make([]*core.ChainPack, noValidators)
+	chains := make([]*blockgen.ChainPack, noValidators)
 
 	for i, v := range validators {
 		chain, err := v.generateChain(chainLength)

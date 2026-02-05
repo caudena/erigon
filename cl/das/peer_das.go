@@ -7,22 +7,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/common/length"
-	"github.com/erigontech/erigon-lib/gointerfaces/sentinelproto"
-	"github.com/erigontech/erigon-lib/log/v3"
+	goethkzg "github.com/crate-crypto/go-eth-kzg"
+
 	"github.com/erigontech/erigon/cl/clparams"
 	"github.com/erigontech/erigon/cl/cltypes"
 	"github.com/erigontech/erigon/cl/cltypes/solid"
 	peerdasstate "github.com/erigontech/erigon/cl/das/state"
 	peerdasutils "github.com/erigontech/erigon/cl/das/utils"
 	"github.com/erigontech/erigon/cl/gossip"
-	"github.com/erigontech/erigon/cl/kzg"
 	"github.com/erigontech/erigon/cl/persistence/blob_storage"
 	"github.com/erigontech/erigon/cl/rpc"
 	"github.com/erigontech/erigon/cl/utils/eth_clock"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/crypto/kzg"
+	"github.com/erigontech/erigon/common/length"
+	"github.com/erigontech/erigon/common/log/v3"
+	"github.com/erigontech/erigon/node/gointerfaces/sentinelproto"
 	"github.com/erigontech/erigon/p2p/enode"
-	ckzg "github.com/ethereum/c-kzg-4844/v2/bindings/go"
 )
 
 //go:generate mockgen -typed=true -destination=mock_services/peer_das_mock.go -package=mock_services . PeerDas
@@ -37,6 +38,7 @@ type PeerDas interface {
 	IsColumnOverHalf(slot uint64, blockRoot common.Hash) bool
 	IsArchivedMode() bool
 	StateReader() peerdasstate.PeerDasStateReader
+	SyncColumnDataLater(block *cltypes.SignedBeaconBlock) error
 }
 
 var (
@@ -55,8 +57,9 @@ type peerdas struct {
 	ethClock          eth_clock.EthereumClock
 	recoverBlobsQueue chan recoverBlobsRequest
 
-	recoveringMutex sync.Mutex
-	isRecovering    map[common.Hash]bool
+	recoveringMutex   sync.Mutex
+	isRecovering      map[common.Hash]bool
+	blocksToCheckSync sync.Map // blockRoot -> blindedBlock
 }
 
 func NewPeerDas(
@@ -71,7 +74,7 @@ func NewPeerDas(
 	ethClock eth_clock.EthereumClock,
 	peerDasState *peerdasstate.PeerDasState,
 ) PeerDas {
-	kzg.InitKZG()
+	kzg.InitKZGCtx()
 	p := &peerdas{
 		state:             peerDasState,
 		nodeID:            nodeID,
@@ -84,13 +87,15 @@ func NewPeerDas(
 		ethClock:          ethClock,
 		recoverBlobsQueue: make(chan recoverBlobsRequest, 128),
 
-		recoveringMutex: sync.Mutex{},
-		isRecovering:    make(map[common.Hash]bool),
+		recoveringMutex:   sync.Mutex{},
+		isRecovering:      make(map[common.Hash]bool),
+		blocksToCheckSync: sync.Map{},
 	}
 	p.resubscribeGossip()
 	for range numOfBlobRecoveryWorkers {
 		go p.blobsRecoverWorker(ctx)
 	}
+	go p.syncColumnDataWorker(ctx)
 	return p
 }
 
@@ -294,8 +299,8 @@ func (d *peerdas) blobsRecoverWorker(ctx context.Context) {
 			// kzg commitment
 			copy(kzgCommitment[:], anyColumnSidecar.KzgCommitments.Get(blobIndex)[:])
 			// kzg proof
-			ckzgBlob := ckzg.Blob(blob)
-			proof, err := ckzg.ComputeBlobKZGProof(&ckzgBlob, ckzg.Bytes48(kzgCommitment))
+			ckzgBlob := goethkzg.Blob(blob)
+			proof, err := kzg.Ctx().ComputeBlobKZGProof(&ckzgBlob, goethkzg.KZGCommitment(kzgCommitment), 0 /* numGoRoutines */)
 			if err != nil {
 				log.Warn("[blobsRecover] failed to compute blob kzg proof", "blobIndex", blobIndex, "slot", slot, "blockRoot", blockRoot)
 				return
@@ -616,10 +621,20 @@ mainloop:
 			break mainloop
 		case <-halfCheckTicker.C:
 			for _, entry := range req.remainingEntries() {
-				if needToRecoverBlobs &&
-					(d.IsColumnOverHalf(entry.slot, entry.blockRoot) || d.IsBlobAlreadyRecovered(entry.blockRoot)) {
-					// no need to schedule recovery for this block because someone else will do it
-					req.removeBlock(entry.slot, entry.blockRoot)
+				if needToRecoverBlobs {
+					if d.IsColumnOverHalf(entry.slot, entry.blockRoot) || d.IsBlobAlreadyRecovered(entry.blockRoot) {
+						// no need to schedule recovery for this block because someone else will do it
+						req.removeBlock(entry.slot, entry.blockRoot)
+					}
+				} else {
+					available, err := d.isMyColumnDataAvailable(entry.slot, entry.blockRoot)
+					if err != nil {
+						log.Debug("failed to check if column data is available", "err", err)
+						continue
+					}
+					if available {
+						req.removeBlock(entry.slot, entry.blockRoot)
+					}
 				}
 			}
 			if req.requestData().Len() == 0 {
@@ -836,4 +851,87 @@ func (d *downloadRequest) requestData() *solid.ListSSZ[*cltypes.DataColumnsByRoo
 	}
 	d.cacheRequest = payload
 	return payload
+}
+
+func (d *peerdas) SyncColumnDataLater(block *cltypes.SignedBeaconBlock) error {
+	if block.Version() < clparams.FuluVersion {
+		return nil
+	}
+	if block.Block.Body.BlobKzgCommitments == nil || block.Block.Body.BlobKzgCommitments.Len() == 0 {
+		return nil
+	}
+	blockRoot, err := block.Block.HashSSZ()
+	if err != nil {
+		return err
+	}
+	blindedBlock, err := block.Blinded()
+	if err != nil {
+		return err
+	}
+	d.blocksToCheckSync.Store(common.Hash(blockRoot), blindedBlock)
+	return nil
+}
+
+func (d *peerdas) syncColumnDataWorker(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// check peers count
+			if d.rpc != nil {
+				if peersCount, err := d.rpc.Peers(); err != nil {
+					log.Warn("failed to get peers count", "err", err)
+					continue
+				} else if peersCount == 0 {
+					log.Info("[syncColumnDataWorker] no peers available, skipping sync")
+					continue
+				}
+			}
+
+			blocks := []*cltypes.SignedBlindedBeaconBlock{}
+			roots := []common.Hash{}
+			d.blocksToCheckSync.Range(func(key, value any) bool {
+				root := key.(common.Hash)
+				block := value.(*cltypes.SignedBlindedBeaconBlock)
+				curSlot := d.ethClock.GetCurrentSlot()
+				if curSlot-block.Block.Slot < 5 { // wait slow data from peers
+					// skip blocks that are too close to the current slot
+					return true
+				}
+				available, err := d.IsDataAvailable(block.Block.Slot, root)
+				if err != nil {
+					log.Warn("failed to check if data is available", "err", err)
+				} else if available {
+					log.Trace("[syncColumnDataWorker] column data is already available, removing from sync queue", "slot", block.Block.Slot, "blockRoot", root)
+					d.blocksToCheckSync.Delete(root)
+				} else {
+					blocks = append(blocks, block)
+					roots = append(roots, root)
+				}
+				return true
+			})
+			if len(blocks) == 0 {
+				continue
+			}
+			log.Debug("[syncColumnDataWorker] syncing column data", "blocks_count", len(blocks))
+			if d.IsArchivedMode() {
+				if err := d.DownloadColumnsAndRecoverBlobs(ctx, blocks); err != nil {
+					log.Warn("failed to download columns and recover blobs", "err", err)
+					continue
+				}
+			} else {
+				if err := d.DownloadOnlyCustodyColumns(ctx, blocks); err != nil {
+					log.Warn("failed to download only custody columns", "err", err)
+					continue
+				}
+			}
+			for i, root := range roots {
+				d.blocksToCheckSync.Delete(root)
+				log.Debug("[syncColumnDataWorker] column data is synced, removing from sync queue", "slot", blocks[i].Block.Slot, "blockRoot", root)
+			}
+		}
+	}
 }

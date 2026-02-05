@@ -1,9 +1,9 @@
 package beaconevents
 
 import (
-	"github.com/erigontech/erigon-lib/common"
 	"github.com/erigontech/erigon/cl/cltypes"
 	"github.com/erigontech/erigon/cl/cltypes/solid"
+	"github.com/erigontech/erigon/common"
 	"github.com/erigontech/erigon/execution/engineapi/engine_types"
 )
 
@@ -17,6 +17,7 @@ type EventTopic string
 // Operation event topics
 const (
 	OpAttestation       EventTopic = "attestation"
+	OpSingleAttestation EventTopic = "single_attestation"
 	OpVoluntaryExit     EventTopic = "voluntary_exit"
 	OpProposerSlashing  EventTopic = "proposer_slashing"
 	OpAttesterSlashing  EventTopic = "attester_slashing"

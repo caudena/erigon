@@ -27,7 +27,7 @@ import (
 
 	"github.com/holiman/uint256"
 
-	"github.com/erigontech/erigon-lib/common"
+	"github.com/erigontech/erigon/common"
 	"github.com/erigontech/erigon/execution/chain"
 	"github.com/erigontech/erigon/execution/rlp"
 )
@@ -133,6 +133,7 @@ func (tx *LegacyTx) Unwrap() Transaction {
 }
 
 // NewTransaction creates an unsigned legacy transaction.
+//
 // Deprecated: use NewTx instead.
 func NewTransaction(nonce uint64, to common.Address, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, data []byte) *LegacyTx {
 	return &LegacyTx{
@@ -148,6 +149,7 @@ func NewTransaction(nonce uint64, to common.Address, amount *uint256.Int, gasLim
 }
 
 // NewContractCreation creates an unsigned legacy transaction.
+//
 // Deprecated: use NewTx instead.
 func NewContractCreation(nonce uint64, amount *uint256.Int, gasLimit uint64, gasPrice *uint256.Int, data []byte) *LegacyTx {
 	return &LegacyTx{
@@ -348,17 +350,18 @@ func (tx *LegacyTx) DecodeRLP(s *rlp.Stream) error {
 // AsMessage returns the transaction as a core.Message.
 func (tx *LegacyTx) AsMessage(s Signer, _ *big.Int, _ *chain.Rules) (*Message, error) {
 	msg := Message{
-		nonce:      tx.Nonce,
-		gasLimit:   tx.GasLimit,
-		gasPrice:   *tx.GasPrice,
-		tipCap:     *tx.GasPrice,
-		feeCap:     *tx.GasPrice,
-		to:         tx.To,
-		amount:     *tx.Value,
-		data:       tx.Data,
-		accessList: nil,
-		checkNonce: true,
-		checkGas:   true,
+		nonce:            tx.Nonce,
+		gasLimit:         tx.GasLimit,
+		gasPrice:         *tx.GasPrice,
+		tipCap:           *tx.GasPrice,
+		feeCap:           *tx.GasPrice,
+		to:               tx.To,
+		amount:           *tx.Value,
+		data:             tx.Data,
+		accessList:       nil,
+		checkNonce:       true,
+		checkTransaction: true,
+		checkGas:         true,
 	}
 
 	var err error

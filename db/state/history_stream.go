@@ -23,8 +23,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/db/kv"
 	"github.com/erigontech/erigon/db/kv/order"
 	"github.com/erigontech/erigon/db/kv/stream"
@@ -138,14 +138,21 @@ func (hi *HistoryRangeAsOfFiles) advanceInFiles() error {
 		if !ok {
 			continue
 		}
-		if hi.hc.h.HistoryValuesOnCompressedPage <= 1 {
+
+		compressedPageValuesCount := historyItem.src.decompressor.CompressedPageValuesCount()
+
+		if historyItem.src.decompressor.CompressionFormatVersion() == seg.FileCompressionFormatV0 {
+			compressedPageValuesCount = hi.hc.h.HistoryValuesOnCompressedPage
+		}
+
+		if compressedPageValuesCount <= 1 {
 			g := hi.hc.statelessGetter(historyItem.i)
 			g.Reset(offset)
 			hi.nextVal, _ = g.Next(nil)
 		} else {
-			g := seg.NewPagedReader(hi.hc.statelessGetter(historyItem.i), hi.hc.h.HistoryValuesOnCompressedPage, true)
+			g := seg.NewPagedReader(hi.hc.statelessGetter(historyItem.i), compressedPageValuesCount, true)
 			g.Reset(offset)
-			for i := 0; i < hi.hc.h.HistoryValuesOnCompressedPage && g.HasNext(); i++ {
+			for i := 0; i < compressedPageValuesCount && g.HasNext(); i++ {
 				k, v, _, _ := g.Next2(nil)
 				histKey := historyKey(txNum, hi.nextKey, nil)
 				if bytes.Equal(histKey, k) {
@@ -432,14 +439,20 @@ func (hi *HistoryChangesIterFiles) advance() error {
 			continue
 		}
 
-		if hi.hc.h.HistoryValuesOnCompressedPage <= 1 {
+		compressedPageValuesCount := historyItem.src.decompressor.CompressedPageValuesCount()
+
+		if historyItem.src.decompressor.CompressionFormatVersion() == seg.FileCompressionFormatV0 {
+			compressedPageValuesCount = hi.hc.h.HistoryValuesOnCompressedPage
+		}
+
+		if compressedPageValuesCount <= 1 {
 			g := hi.hc.statelessGetter(historyItem.i)
 			g.Reset(offset)
 			hi.nextVal, _ = g.Next(nil)
 		} else {
-			g := seg.NewPagedReader(hi.hc.statelessGetter(historyItem.i), hi.hc.h.HistoryValuesOnCompressedPage, true)
+			g := seg.NewPagedReader(hi.hc.statelessGetter(historyItem.i), compressedPageValuesCount, true)
 			g.Reset(offset)
-			for i := 0; i < hi.hc.h.HistoryValuesOnCompressedPage && g.HasNext(); i++ {
+			for i := 0; i < compressedPageValuesCount && g.HasNext(); i++ {
 				k, v, _, _ := g.Next2(nil)
 				histKey := historyKey(txNum, hi.nextKey, nil)
 				if bytes.Equal(histKey, k) {

@@ -38,8 +38,8 @@ import (
 	"github.com/anacrolix/torrent"
 	pp "github.com/anacrolix/torrent/peer_protocol"
 
-	"github.com/erigontech/erigon-lib/common/dir"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common/dir"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/db/datadir"
 	"github.com/erigontech/erigon/db/snapcfg"
 )
@@ -161,7 +161,7 @@ func New(
 	if opts.UploadRateLimit.Ok {
 		torrentConfig.UploadRateLimiter = rate.NewLimiter(opts.UploadRateLimit.Value, 0)
 	}
-	for value := range opts.DownloadRateLimit.Iter() {
+	for value := range opts.DownloadRateLimit.Iter {
 		switch value {
 		case rate.Inf:
 			torrentConfig.DownloadRateLimiter = nil
@@ -176,7 +176,7 @@ func New(
 	}
 
 	// Override value set by download rate-limit.
-	for value := range opts.DisableTrackers.Iter() {
+	for value := range opts.DisableTrackers.Iter {
 		torrentConfig.DisableTrackers = value
 	}
 
@@ -290,7 +290,7 @@ func New(
 		cfg.WebSeedUrls = append(cfg.WebSeedUrls, s.String()+"/")
 	}
 
-	for value := range opts.WebseedDownloadRateLimit.Iter() {
+	for value := range opts.WebseedDownloadRateLimit.Iter {
 		cfg.SeparateWebseedDownloadRateLimit.Set(value)
 	}
 

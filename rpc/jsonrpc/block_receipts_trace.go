@@ -4,21 +4,21 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/erigontech/erigon-lib/common"
-	txpool "github.com/erigontech/erigon-lib/gointerfaces/txpoolproto"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common"
+	txpool 	"github.com/erigontech/erigon/node/gointerfaces/txpoolproto"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/db/kv"
 	"github.com/erigontech/erigon/execution/types"
 
-	"github.com/erigontech/erigon/eth/ethutils"
+	"github.com/erigontech/erigon/execution/ethutils"
 
 	bortypes "github.com/erigontech/erigon/polygon/bor/types"
 
-	"github.com/erigontech/erigon-lib/common/math"
+	"github.com/erigontech/erigon/common/math"
 
 	"github.com/erigontech/erigon/rpc"
 
-	"github.com/erigontech/erigon-lib/crypto"
+	"github.com/erigontech/erigon/common/crypto"
 	"github.com/erigontech/erigon/rpc/ethapi"
 	"github.com/erigontech/erigon/rpc/rpchelper"
 )

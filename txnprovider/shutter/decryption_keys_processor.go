@@ -30,9 +30,9 @@ import (
 	mapset "github.com/deckarep/golang-set/v2"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/estimate"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/estimate"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/execution/types"
 	shuttercrypto "github.com/erigontech/erigon/txnprovider/shutter/internal/crypto"
 	"github.com/erigontech/erigon/txnprovider/shutter/internal/proto"
@@ -345,7 +345,7 @@ func (dkp *DecryptionKeysProcessor) processBlockEventCleanup(blockEvent BlockEve
 
 	for _, mark := range cleanUpMarks {
 		dkp.processed.Remove(mark)
-		dkp.encryptedTxnsPool.DeleteUpTo(mark.Eon, mark.To+1)
+		dkp.encryptedTxnsPool.DeleteUpTo(mark.Eon, mark.To)
 	}
 
 	return nil

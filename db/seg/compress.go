@@ -35,10 +35,10 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
-	"github.com/erigontech/erigon-lib/common"
-	"github.com/erigontech/erigon-lib/common/dir"
-	dir2 "github.com/erigontech/erigon-lib/common/dir"
-	"github.com/erigontech/erigon-lib/log/v3"
+	"github.com/erigontech/erigon/common"
+	"github.com/erigontech/erigon/common/dir"
+	dir2 "github.com/erigontech/erigon/common/dir"
+	"github.com/erigontech/erigon/common/log/v3"
 	"github.com/erigontech/erigon/db/etl"
 )
 
@@ -74,6 +74,17 @@ type Cfg struct {
 	SamplingFactor uint64
 
 	Workers int
+
+	// arbitrary bytes set by user at start of the file
+	ExpectMetadata bool
+
+	// number of values on compressed page. if > 0 then page level compression is enabled
+	ValuesOnCompressedPage int
+}
+
+func (c Cfg) WithValuesOnCompressedPage(n int) Cfg {
+	c.ValuesOnCompressedPage = n
+	return c
 }
 
 var DefaultCfg = Cfg{
@@ -119,6 +130,11 @@ type Compressor struct {
 	trace            bool
 	logger           log.Logger
 	noFsync          bool // fsync is enabled by default, but tests can manually disable
+
+	version             uint8
+	featureFlagBitmask  FeatureFlagBitmask
+	compPageValuesCount uint8
+	metadata            []byte
 }
 
 func NewCompressor(ctx context.Context, logPrefix, outputFile, tmpDir string, cfg Cfg, lvl log.Lvl, logger log.Logger) (*Compressor, error) {
@@ -146,7 +162,7 @@ func NewCompressor(ctx context.Context, logPrefix, outputFile, tmpDir string, cf
 		go extractPatternsInSuperstrings(ctx, superstrings, collector, cfg, wg, logger)
 	}
 	_, outputFileName := filepath.Split(outputFile)
-	return &Compressor{
+	cc := &Compressor{
 		Cfg:              cfg,
 		uncompressedFile: uncompressedFile,
 		outputFile:       outputFile,
@@ -159,7 +175,15 @@ func NewCompressor(ctx context.Context, logPrefix, outputFile, tmpDir string, cf
 		lvl:              lvl,
 		wg:               wg,
 		logger:           logger,
-	}, nil
+		version:          FileCompressionFormatV0, // for release 3.3 only, since 3.4 we use v1 format
+	}
+
+	if cfg.ValuesOnCompressedPage > 0 {
+		cc.featureFlagBitmask.Set(PageLevelCompressionEnabled)
+		cc.compPageValuesCount = uint8(cfg.ValuesOnCompressedPage)
+	}
+
+	return cc, nil
 }
 
 func (c *Compressor) Close() {
@@ -170,9 +194,16 @@ func (c *Compressor) Close() {
 	c.suffixCollectors = nil
 }
 
-func (c *Compressor) SetTrace(trace bool) { c.trace = trace }
-func (c *Compressor) FileName() string    { return c.outputFileName }
-func (c *Compressor) WorkersAmount() int  { return c.Workers }
+func (c *Compressor) SetTrace(trace bool)            { c.trace = trace }
+func (c *Compressor) FileName() string               { return c.outputFileName }
+func (c *Compressor) WorkersAmount() int             { return c.Workers }
+func (c *Compressor) GetValuesOnCompressedPage() int { return int(c.ValuesOnCompressedPage) }
+func (c *Compressor) SetMetadata(metadata []byte) {
+	if !c.ExpectMetadata {
+		panic("metadata not expected in compressor")
+	}
+	c.metadata = metadata
+}
 
 func (c *Compressor) Count() int { return int(c.wordsCount) }
 
@@ -265,6 +296,31 @@ func (c *Compressor) Compress() error {
 	tmpFileName := cf.Name()
 	defer dir.RemoveFile(tmpFileName)
 	defer cf.Close()
+
+	if c.version == FileCompressionFormatV1 {
+		if _, err := cf.Write([]byte{c.version, byte(c.featureFlagBitmask)}); err != nil {
+			return err
+		}
+
+		if c.featureFlagBitmask.Has(PageLevelCompressionEnabled) {
+			if _, err := cf.Write([]byte{c.compPageValuesCount}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if c.ExpectMetadata {
+		dataLen := uint32(len(c.metadata))
+		var dataLenB [4]byte
+		binary.BigEndian.PutUint32(dataLenB[:], dataLen)
+		if _, err := cf.Write(dataLenB[:]); err != nil {
+			return err
+		}
+		if _, err := cf.Write(c.metadata); err != nil {
+			return err
+		}
+	}
+
 	t := time.Now()
 	if err := compressWithPatternCandidates(c.ctx, c.trace, c.Cfg, c.logPrefix, tmpFileName, cf, c.uncompressedFile, db, c.lvl, c.logger); err != nil {
 		return err

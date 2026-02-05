@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync/atomic"
@@ -31,10 +32,10 @@ import (
 
 	"github.com/c2h5oh/datasize"
 
-	"github.com/erigontech/erigon-lib/common/assert"
-	"github.com/erigontech/erigon-lib/common/dbg"
-	"github.com/erigontech/erigon-lib/log/v3"
-	"github.com/erigontech/erigon-lib/mmap"
+	"github.com/erigontech/erigon/common/assert"
+	"github.com/erigontech/erigon/common/dbg"
+	"github.com/erigontech/erigon/common/log/v3"
+	"github.com/erigontech/erigon/common/mmap"
 )
 
 type word []byte // plain text word associated with code from dictionary
@@ -120,20 +121,27 @@ func (e ErrCompressedFileCorrupted) Is(err error) bool {
 
 // Decompressor provides access to the superstrings in a file produced by a compressor
 type Decompressor struct {
-	f               *os.File
-	mmapHandle2     *[mmap.MaxMapSize]byte // mmap handle for windows (this is used to close mmap)
-	dict            *patternTable
-	posDict         *posTable
-	mmapHandle1     []byte // mmap handle for unix (this is used to close mmap)
-	data            []byte // slice of correct size for the decompressor to work with
-	wordsStart      uint64 // Offset of whether the superstrings actually start
-	size            int64
-	modTime         time.Time
-	wordsCount      uint64
-	emptyWordsCount uint64
+	f                   *os.File
+	mmapHandle2         *[mmap.MaxMapSize]byte // mmap handle for windows (this is used to close mmap)
+	dict                *patternTable
+	posDict             *posTable
+	mmapHandle1         []byte // mmap handle for unix (this is used to close mmap)
+	data                []byte // slice of correct size for the decompressor to work with
+	wordsStart          uint64 // Offset of whether the superstrings actually start
+	size                int64
+	modTime             time.Time
+	wordsCount          uint64
+	emptyWordsCount     uint64
+	hasMetadata         bool
+	metadata            []byte
+	version             uint8
+	featureFlagBitmask  FeatureFlagBitmask
+	compPageValuesCount uint8
 
 	serializedDictSize uint64
+	lenDictSize        uint64 // huffman encoded lengths
 	dictWords          int
+	dictLens           int
 
 	filePath, fileName string
 
@@ -178,12 +186,17 @@ func SetDecompressionTableCondensity(fromBitSize int) {
 }
 
 func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
+	return NewDecompressorWithMetadata(compressedFilePath, false)
+}
+
+func NewDecompressorWithMetadata(compressedFilePath string, hasMetadata bool) (*Decompressor, error) {
 	_, fName := filepath.Split(compressedFilePath)
 	var err error
 	var validationPassed = false
 	d := &Decompressor{
-		filePath: compressedFilePath,
-		fileName: fName,
+		filePath:    compressedFilePath,
+		fileName:    fName,
+		hasMetadata: hasMetadata,
 	}
 
 	defer func() {
@@ -206,7 +219,7 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 		return nil, err
 	}
 	d.size = stat.Size()
-	if d.size < compressedMinSize {
+	if !hasMetadata && d.size < compressedMinSize {
 		return nil, &ErrCompressedFileCorrupted{
 			FileName: fName,
 			Reason: fmt.Sprintf("invalid file size %s, expected at least %s",
@@ -221,6 +234,36 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 	d.data = d.mmapHandle1[:d.size]
 	defer d.MadvNormal().DisableReadAhead() //speedup opening on slow drives
 
+	d.version = d.data[0]
+
+	if d.version == FileCompressionFormatV1 {
+		// 1st byte: version,
+		// 2nd byte: defines how exactly the file is compressed
+		// 3rd byte (otional): exists if PageLevelCompressionEnabled flag is enabled, and defines number of values on compressed page
+		d.featureFlagBitmask = FeatureFlagBitmask(d.data[1])
+		d.data = d.data[2:]
+	}
+
+	if d.featureFlagBitmask.Has(PageLevelCompressionEnabled) {
+		d.compPageValuesCount = d.data[0]
+		d.data = d.data[1:]
+	}
+
+	if hasMetadata {
+		metadataLen := binary.BigEndian.Uint32(d.data[:4])
+		d.metadata = d.data[4 : 4+metadataLen]
+		d.data = d.data[4+metadataLen:]
+
+		dataSize := len(d.data)
+		if dataSize < compressedMinSize {
+			return nil, &ErrCompressedFileCorrupted{
+				FileName: fName,
+				Reason: fmt.Sprintf("invalid file size %s, expected at least %s",
+					datasize.ByteSize(dataSize).HR(), datasize.ByteSize(compressedMinSize).HR())}
+		}
+		// not editing d.size because of checkFileLenChanges check
+	}
+
 	d.wordsCount = binary.BigEndian.Uint64(d.data[:8])
 	d.emptyWordsCount = binary.BigEndian.Uint64(d.data[8:16])
 
@@ -228,11 +271,11 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 	dictSize := binary.BigEndian.Uint64(d.data[16:pos])
 	d.serializedDictSize = dictSize
 
-	if pos+dictSize > uint64(d.size) {
+	if pos+dictSize > uint64(len(d.data)) {
 		return nil, &ErrCompressedFileCorrupted{
 			FileName: fName,
 			Reason: fmt.Sprintf("invalid patterns dictSize=%s while file size is just %s",
-				datasize.ByteSize(dictSize).HR(), datasize.ByteSize(d.size).HR())}
+				datasize.ByteSize(dictSize).HR(), datasize.ByteSize(len(d.data)).HR())}
 	}
 
 	// todo awskii: want to move dictionary reading to separate function?
@@ -283,6 +326,7 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 	pos += dictSize // offset patterns
 	// read positions
 	dictSize = binary.BigEndian.Uint64(d.data[pos : pos+8])
+	d.lenDictSize = dictSize
 	pos += 8
 
 	if pos+dictSize > uint64(d.size) {
@@ -313,6 +357,7 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 		dictPos += uint64(n)
 		poss = append(poss, dp)
 	}
+	d.dictLens = len(poss)
 
 	if dictSize > 0 {
 		var bitLen int
@@ -335,10 +380,11 @@ func NewDecompressor(compressedFilePath string) (*Decompressor, error) {
 	}
 	d.wordsStart = pos + dictSize
 
-	if d.Count() == 0 && dictSize == 0 && d.size > compressedMinSize {
+	if d.Count() == 0 && dictSize == 0 && d.size > d.calcCompressedMinSize() {
 		return nil, &ErrCompressedFileCorrupted{
 			FileName: fName, Reason: fmt.Sprintf("size %v but no words in it", datasize.ByteSize(d.size).HR())}
 	}
+
 	validationPassed = true
 	return d, nil
 }
@@ -439,8 +485,12 @@ func buildPosTable(depths []uint64, poss []uint64, table *posTable, code uint16,
 func (d *Decompressor) DataHandle() unsafe.Pointer {
 	return unsafe.Pointer(&d.data[0])
 }
-func (d *Decompressor) SerializedDictSize() uint64 { return d.serializedDictSize }
-func (d *Decompressor) DictWords() int             { return d.dictWords }
+func (d *Decompressor) SerializedDictSize() uint64      { return d.serializedDictSize }
+func (d *Decompressor) SerializedLenSize() uint64       { return d.lenDictSize }
+func (d *Decompressor) DictWords() int                  { return d.dictWords }
+func (d *Decompressor) DictLens() int                   { return d.dictLens }
+func (d *Decompressor) CompressedPageValuesCount() int  { return int(d.compPageValuesCount) }
+func (d *Decompressor) CompressionFormatVersion() uint8 { return d.version }
 
 func (d *Decompressor) Size() int64 {
 	return d.size
@@ -490,6 +540,12 @@ func (d *Decompressor) Close() {
 
 func (d *Decompressor) FilePath() string { return d.filePath }
 func (d *Decompressor) FileName() string { return d.fileName }
+func (d *Decompressor) GetMetadata() []byte {
+	if !d.hasMetadata {
+		panic("no metadata stored")
+	}
+	return d.metadata
+}
 
 // WithReadAhead - Expect read in sequential order. (Hence, pages in the given range can be aggressively read ahead, and may be freed soon after they are accessed.)
 func (d *Decompressor) WithReadAhead(f func() error) error {
@@ -561,10 +617,11 @@ func (g *Getter) MadvNormal() MadvDisabler {
 	g.d.MadvNormal()
 	return g
 }
-func (g *Getter) DisableReadAhead() { g.d.DisableReadAhead() }
-func (g *Getter) Trace(t bool)      { g.trace = t }
-func (g *Getter) Count() int        { return g.d.Count() }
-func (g *Getter) FileName() string  { return g.fName }
+func (g *Getter) DisableReadAhead()   { g.d.DisableReadAhead() }
+func (g *Getter) Trace(t bool)        { g.trace = t }
+func (g *Getter) Count() int          { return g.d.Count() }
+func (g *Getter) FileName() string    { return g.fName }
+func (g *Getter) GetMetadata() []byte { return g.d.GetMetadata() }
 
 func (g *Getter) nextPos(clean bool) (pos uint64) {
 	defer func() {
@@ -634,12 +691,7 @@ func (g *Getter) nextPattern() []byte {
 var condensedWordDistances = buildCondensedWordDistances()
 
 func checkDistance(power int, d int) bool {
-	for _, dist := range condensedWordDistances[power] {
-		if dist == d {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(condensedWordDistances[power], d)
 }
 
 func buildCondensedWordDistances() [][]int {
@@ -672,6 +724,10 @@ func (d *Decompressor) MakeGetter() *Getter {
 		patternDict: d.dict,
 		fName:       d.FileName(),
 	}
+}
+
+func (g *Getter) DataLen() int {
+	return len(g.data)
 }
 
 func (g *Getter) Reset(offset uint64) {
@@ -1046,4 +1102,16 @@ func (g *Getter) BinarySearch(seek []byte, count int, getOffset func(i uint64) (
 		return 0, false
 	}
 	return foundOffset, true
+}
+
+func (d *Decompressor) calcCompressedMinSize() int64 {
+	if d.version == FileCompressionFormatV0 {
+		return compressedMinSize
+	}
+
+	if d.featureFlagBitmask.Has(PageLevelCompressionEnabled) {
+		return compressedMinSize + 3 // 2 bytes always are used for bitmask and version + 1 optional for page level compression if enabled
+	}
+
+	return compressedMinSize + 2
 }
